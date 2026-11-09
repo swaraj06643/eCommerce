@@ -65,30 +65,51 @@
 
             </script>
      </head>
-     <body style="font-family: 'Glory', sans-serif;">
+     <body class="shop-body" style="font-family: 'Glory', sans-serif;">
 
-        <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-          <a class="navbar-brand" href="{% url 'store' %}"><img width="40px" height="40px" src="{% static 'images/logo.png' %}">e-Commerce</a>
+        <div id="cart-toast" class="cart-toast" aria-live="polite">
+            <span>Added to bag</span>
+            <a href="{% url 'cart' %}">Go to Bag</a>
+        </div>
+
+        <div class="top-strip">FRESH FINDS, EVERY DAY <span>•</span> SHOP YOUR FAVOURITES</div>
+        <nav class="navbar navbar-expand-lg shop-navbar">
+          <a class="navbar-brand shop-brand" href="{% url 'store' %}"><img width="40px" height="40px" src="{% static 'images/logo.png' %}"><span>e-Commerce</span></a>
           <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarSupportedContent" aria-controls="navbarSupportedContent" aria-expanded="false" aria-label="Toggle navigation">
-            <span class="navbar-toggler-icon"></span>
+            <span class="navbar-toggler-icon">&#9776;</span>
           </button>
 
           <div class="collapse navbar-collapse" id="navbarSupportedContent">
-            <ul class="navbar-nav mr-auto">
-              <li class="nav-item active">
-                <a class="nav-link" href="{% url 'store' %}">Store <span class="sr-only">(current)</span></a>
+            <ul class="navbar-nav shop-links mr-auto">
+              <li class="nav-item">
+                <a class="nav-link" href="{% url 'store' %}">Home</a>
+              </li>
+              <li class="nav-item">
+                <a class="nav-link" href="{% url 'store' %}#products">Shop</a>
+              </li>
+              <li class="nav-item">
+                  <a class="nav-link" href="{% url 'account' %}">Account</a>
+              </li>
+              <li class="nav-item">
+                  <a class="nav-link" href="#" title="Wishlist">Wishlist</a>
               </li>
             </ul>
-            <div class="form-inline my-2 my-lg-0">
-                <a href="#"class="btn btn-primary">Login</a>
-                <a href="{% url 'cart' %}">
-                    <img  id="cart-icon" src="{% static 'images/cart.png' %}">
-                </a>
-                <p id="cart-total">{{ cartItems }}</p>
-            </div>
 
-          </div>
-        </nav>
+              <div class="form-inline shop-actions my-2 my-lg-0">
+                  {% if request.user.is_authenticated %}
+                      <a class="account-link" href="{% url 'account' %}">Hi, {{ request.user.first_name|default:request.user.username }}</a>
+                  {% else %}
+                      <a class="account-link" href="{% url 'login' %}">Login</a>
+                  {% endif %}
+                  <a class="cart-link" href="{% url 'cart' %}" aria-label="Shopping cart">
+                      <img  id="cart-icon" src="{% static 'images/cart.png' %}">
+                      <span>Bag</span>
+                      <span id="cart-total">{{ cartItems }}</span>
+                  </a>
+              </div>
+
+            </div>
+          </nav>
 
          <div class="container">
                 <br>
@@ -99,7 +120,7 @@
                 <br>
          </div>
 
-      <nav class="navbar navbar-expand-lg navbar-light bg-light"><span style="font-family: 'Glory', sans-serif; color: black; margin-top: 2%; margin-left: 540px;"> ©️ Build by Ruhul Amin Parvez with ❤️ </span></nav>
+      <footer class="shop-footer">© Build by Ruhul Amin Parvez with love</footer>
 
       <script src="https://code.jquery.com/jquery-3.4.1.slim.min.js" integrity="sha384-J6qa4849blE2+poT4WnyKhv5vZF5SrPo0iEjwBvKU7imGFAV0wwj1yYfoRSJoZ+n" crossorigin="anonymous"></script>
 

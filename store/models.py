@@ -5,9 +5,10 @@ class Customer(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, null=True, blank=True)
     name = models.CharField(max_length=200, null=True)
     email = models.CharField(max_length=200, null=True)
+    phone = models.CharField(max_length=20, null=True, blank=True)
 
     def __str__(self):
-        return self.name
+        return self.name or self.email or str(self.id)
 
 class Product(models.Model):
     name = models.CharField(max_length=200, null=True)
@@ -28,13 +29,23 @@ class Product(models.Model):
 
 
 class Order(models.Model):
+    STATUS_CHOICES = [
+        ('Placed', 'Placed'),
+        ('Packed', 'Packed'),
+        ('Shipped', 'Shipped'),
+        ('Out for Delivery', 'Out for Delivery'),
+        ('Delivered', 'Delivered'),
+    ]
+
     customer = models.ForeignKey(Customer, on_delete=models.SET_NULL, null=True, blank=True)
     date_order = models.DateTimeField(auto_now_add=True)
     complete = models.BooleanField(default=False, null=True, blank=True)
     transaction_id = models.CharField(max_length=200, null=True)
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default='Placed')
+    order_number = models.CharField(max_length=40, unique=True, null=True, blank=True)
 
     def __str__(self):
-        return str(self.id)
+        return str(self.order_number or self.id)
 
     @property
     def shipping(self):

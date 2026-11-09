@@ -1,11 +1,25 @@
 var updateBtns = document.getElementsByClassName('update-cart')
 
+function showCartToast() {
+	var toast = document.getElementById('cart-toast')
+	if (!toast) return;
+	toast.classList.add('visible')
+	clearTimeout(showCartToast.timer)
+	showCartToast.timer = setTimeout(function(){
+		toast.classList.remove('visible')
+	}, 2600)
+}
+
 for (i = 0; i < updateBtns.length; i++) {
 	updateBtns[i].addEventListener('click', function(){
 		var productId = this.dataset.product
 		var action = this.dataset.action
 		console.log('productId:', productId, 'Action:', action)
 		console.log('USER:', user)
+
+		if (action == 'add') {
+			showCartToast()
+		}
 
 		if (user == 'AnonymousUser'){
 			addCookieItem(productId, action)

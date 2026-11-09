@@ -1,0 +1,53 @@
+{% extends 'store/main.html' %}
+{% block content %}
+<div class="account-page">
+    <div class="account-header">
+        <div>
+            <p class="section-kicker">MY ACCOUNT</p>
+            <h2>Hello, {{ customer.name|default:user.username }}</h2>
+        </div>
+        <a href="{% url 'logout' %}" class="btn btn-outline-dark">Logout</a>
+    </div>
+
+    <div class="row account-grid">
+        <div class="col-lg-4">
+            <div class="account-card profile-card">
+                <h3>Profile</h3>
+                <ul>
+                    <li><span>Name</span><strong>{{ customer.name|default:user.username }}</strong></li>
+                    <li><span>Email</span><strong>{{ customer.email|default:user.email }}</strong></li>
+                    <li><span>Phone</span><strong>{{ customer.phone|default:'Not added yet' }}</strong></li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="col-lg-8">
+            <div class="account-card orders-card">
+                <div class="card-head">
+                    <h3>Recent orders</h3>
+                    <span>{{ orders|length }} order{{ orders|length|pluralize }}</span>
+                </div>
+
+                {% if orders %}
+                    {% for order in orders %}
+                    <div class="order-row">
+                        <div>
+                            <p class="order-number">Order #{{ order.order_number|default:order.id }}</p>
+                            <small>{{ order.date_order|date:'d M, Y' }}</small>
+                        </div>
+                        <div>
+                            <span class="status-pill status-{{ order.status|slugify }}">{{ order.status }}</span>
+                        </div>
+                        <div class="order-total">₹{{ order.get_cart_total|floatformat:2 }}</div>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="empty-state">
+                        <p>No orders yet. Start shopping to see your order status here.</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,16 @@
+{% extends 'store/main.html' %}
+{% load static %}
+{% block content %}
+<div class="auth-shell">
+    <div class="auth-card">
+        <h2>Login</h2>
+        <p class="auth-subtitle">Welcome back to your shopping account.</p>
+        <form method="post">
+            {% csrf_token %}
+            {{ form.as_p }}
+            <button type="submit" class="btn btn-primary btn-block">Login</button>
+        </form>
+        <p class="auth-switch">New to e-Commerce? <a href="{% url 'register' %}">Create an account</a></p>
+    </div>
+</div>
+{% endblock %}

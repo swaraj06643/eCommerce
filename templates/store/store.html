@@ -1,18 +1,55 @@
 {% extends 'store/main.html' %}
 {% load static %}
 {% block content %}
-     <div class="row">
-      {% for product in products %}
-        <div class="col-lg-4">
-            <img class="thumbnail" src="{{ product.imageURL }}">
-            <div class="box-element product">
-                <h6><strong>{{ product.name }}</strong></h6>
-                <hr>
-                <button data-product={{ product.id }} data-action="add" class="btn btn-outline-secondary add-btn update-cart">Add to Cart</button>
-                <a class="btn btn-outline-primary" href="#">View</a>
-		        <h4 style="display: inline-block; float: right"><strong>${{ product.price|floatformat:2 }}</strong></h4>
-            </div>
+     <div class="home-search-wrap">
+        <form class="home-search" method="get" action="{% url 'store' %}" role="search">
+            <input type="search" name="q" value="{{ search_term|default:'' }}" placeholder="Search for products, brands and more" aria-label="Search products">
+            <button type="submit">Search</button>
+        </form>
+     </div>
+
+     <section class="shop-hero">
+        <div class="hero-copy">
+            <p class="hero-kicker">THE EVERYDAY EDIT</p>
+            <h1>Find your next<br><span>favourite thing.</span></h1>
+            <p class="hero-description">Style, tech and little home upgrades — all in one place.</p>
+            <a class="hero-cta" href="#products">Shop the collection <span aria-hidden="true">&rarr;</span></a>
         </div>
-      {% endfor product in products %}
-    </div>
+        <div class="hero-art" aria-hidden="true">
+            <span class="hero-orbit orbit-one"></span>
+            <span class="hero-orbit orbit-two"></span>
+            <span class="hero-sparkle sparkle-one">✦</span>
+            <span class="hero-sparkle sparkle-two">✦</span>
+            <span class="hero-sticker">GOOD<br>FINDS<br>ONLY</span>
+        </div>
+     </section>
+
+     <section class="collection-section" id="products">
+        <div class="collection-heading">
+            <div>
+                <p class="section-kicker">A LITTLE BIT OF EVERYTHING</p>
+                <h2>Popular picks</h2>
+            </div>
+            <span class="collection-note">Made for your everyday</span>
+        </div>
+        <div class="row product-grid">
+      {% for product in products %}
+        <div class="col-lg-3 col-md-4 col-sm-6 product-column">
+            <article class="product-card">
+                <div class="product-image-wrap">
+                    <img class="thumbnail" src="{{ product.imageURL }}" alt="{{ product.name }}">
+                    <span class="product-tag">POPULAR</span>
+                </div>
+                <div class="product-info">
+                    <h3>{{ product.name }}</h3>
+                    <div class="product-bottom">
+                        <strong class="product-price">&#8377;{{ product.price|floatformat:2 }}</strong>
+                        <button data-product="{{ product.id }}" data-action="add" class="add-to-bag update-cart" aria-label="Add {{ product.name }} to cart">+</button>
+                    </div>
+                </div>
+            </article>
+        </div>
+      {% endfor %}
+        </div>
+     </section>
 {% endblock content %}
