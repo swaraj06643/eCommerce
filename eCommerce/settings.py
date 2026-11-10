@@ -108,6 +108,29 @@ AUTH_PASSWORD_VALIDATORS = [
 LOGIN_REDIRECT_URL = '/account/'
 LOGOUT_REDIRECT_URL = '/'
 
+PAYU_KEY = os.environ.get('PAYU_KEY', '')
+PAYU_SALT = os.environ.get('PAYU_SALT', '')
+PAYU_PAYMENT_URL = os.environ.get('PAYU_PAYMENT_URL', 'https://test.payu.in/_payment')
+AVATAR_UPI_ID = os.environ.get('AVATAR_UPI_ID', 'swarajrath6@oksbi')
+
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = os.environ.get('EMAIL_HOST', '')
+EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '587'))
+EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'true').lower() == 'true'
+EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'avatarshop@gmail.com')
+MSG91_AUTH_KEY = os.environ.get('MSG91_AUTH_KEY', '')
+MSG91_OTP_TEMPLATE_ID = os.environ.get('MSG91_OTP_TEMPLATE_ID', '')
+MSG91_OTP_SEND_URL = os.environ.get(
+    'MSG91_OTP_SEND_URL',
+    'https://control.msg91.com/api/v5/otp',
+)
+MSG91_OTP_VERIFY_URL = os.environ.get(
+    'MSG91_OTP_VERIFY_URL',
+    'https://control.msg91.com/api/v5/otp/verify',
+)
+
 # Internationalization# https://docs.djangoproject.com/en/3.2/topics/i18n/
 
 LANGUAGE_CODE = 'en-us'

@@ -1,16 +1,51 @@
 from django.urls import path
+from django.contrib.auth import views as auth_views
+from django.urls import reverse_lazy
 from . import views
 
 urlpatterns = [
 
         path('', views.store, name="store"),
+        path('products/<int:product_id>/', views.product_detail, name="product_detail"),
+        path('help/', views.help_center, name="help"),
         path('cart/', views.cart, name="cart"),
         path('checkout/', views.checkout, name="checkout"),
+        path('checkout/verify-email/', views.request_email_verification, name="request_email_verification"),
+        path('verify-email/<uuid:token>/', views.verify_email, name="verify_email"),
+        path('verify-email-otp/', views.verify_email_otp, name="verify_email_otp"),
+        path('delivery/check/', views.check_delivery, name="check_delivery"),
         path('account/', views.account, name="account"),
+        path('orders/<int:order_id>/action/', views.order_action, name="order_action"),
+        path('order-complete/<uuid:token>/', views.order_complete, name="order_complete"),
+        path('payments/payu/return/', views.payu_return, name="payu_return"),
+        path('analytics/', views.analytics, name="analytics"),
         path('login/', views.login_view, name="login"),
+        path('login/phone/', views.phone_login_request, name="phone_login_request"),
+        path('login/phone/verify/', views.phone_login_verify, name="phone_login_verify"),
+        path(
+            'password-reset/',
+            views.StorePasswordResetView.as_view(),
+            name='password_reset',
+        ),
+        path(
+            'password-reset/done/',
+            auth_views.PasswordResetDoneView.as_view(template_name='store/password_reset_done.html'),
+            name='password_reset_done',
+        ),
+        path(
+            'password-reset/confirm/<uidb64>/<token>/',
+            auth_views.PasswordResetConfirmView.as_view(
+                template_name='store/password_reset_confirm.html',
+                success_url=reverse_lazy('password_reset_complete'),
+            ),
+            name='password_reset_confirm',
+        ),
+        path(
+            'password-reset/complete/',
+            auth_views.PasswordResetCompleteView.as_view(template_name='store/password_reset_complete.html'),
+            name='password_reset_complete',
+        ),
         path('logout/', views.logout_view, name="logout"),
         path('register/', views.register_view, name="register"),
         path('update_item/', views.updateItem, name="update_item"),
-        path('process_order/', views.processOrder, name="process_order"),
-
 ]

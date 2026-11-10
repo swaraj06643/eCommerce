@@ -13,11 +13,35 @@
         <div class="col-lg-4">
             <div class="account-card profile-card">
                 <h3>Profile</h3>
-                <ul>
-                    <li><span>Name</span><strong>{{ customer.name|default:user.username }}</strong></li>
-                    <li><span>Email</span><strong>{{ customer.email|default:user.email }}</strong></li>
-                    <li><span>Phone</span><strong>{{ customer.phone|default:'Not added yet' }}</strong></li>
-                </ul>
+                {% if profile_error %}<p class="form-error">{{ profile_error }}</p>{% endif %}
+                <form method="post" class="profile-form">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="update_profile">
+                    <label for="profile-name">Name</label>
+                    <input id="profile-name" type="text" name="name" value="{{ customer.name|default:user.username }}" required>
+                    <label for="profile-email">Email</label>
+                    <input id="profile-email" type="email" name="email" value="{{ customer.email|default:user.email }}" required>
+                    <label for="profile-phone">Phone</label>
+                    <input id="profile-phone" type="tel" name="phone" value="{{ customer.phone|default:'' }}" autocomplete="tel">
+                    <button class="btn btn-primary btn-block" type="submit">Save profile</button>
+                </form>
+                {% if customer.email_verified %}
+                <p class="email-verified" role="status">Email verified</p>
+                {% else %}
+                <p class="email-verification-note">Verify your email before placing an order.</p>
+                <form method="post" action="{% url 'request_email_verification' %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="email" value="{{ customer.email|default:user.email }}">
+                    <button class="btn btn-outline-dark btn-block" type="submit">Send verification link</button>
+                </form>
+                <form method="post" action="{% url 'verify_email_otp' %}" class="email-otp-form">
+                    {% csrf_token %}
+                    <input type="hidden" name="email" value="{{ customer.email|default:user.email }}">
+                    <label for="account-email-otp">Email verification code</label>
+                    <input id="account-email-otp" name="otp" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+                    <button class="btn btn-outline-dark btn-block" type="submit">Verify code</button>
+                </form>
+                {% endif %}
             </div>
         </div>
 
@@ -30,16 +54,37 @@
 
                 {% if orders %}
                     {% for order in orders %}
-                    <div class="order-row">
+                    <article class="order-card">
+                      <div class="order-row">
                         <div>
                             <p class="order-number">Order #{{ order.order_number|default:order.id }}</p>
                             <small>{{ order.date_order|date:'d M, Y' }}</small>
                         </div>
                         <div>
                             <span class="status-pill status-{{ order.status|slugify }}">{{ order.status }}</span>
+                            <small class="payment-status">Payment: {{ order.get_payment_status_display }}</small>
                         </div>
                         <div class="order-total">₹{{ order.get_cart_total|floatformat:2 }}</div>
-                    </div>
+                      </div>
+                      {% if order.tracking_number or order.shipping_partner %}
+                      <p class="tracking-summary"><strong>Shipment:</strong> {{ order.shipping_partner|default:'Carrier not assigned' }}{% if order.tracking_number %} · Tracking {{ order.tracking_number }}{% endif %}{% if order.tracking_url %} · <a href="{{ order.tracking_url }}" target="_blank" rel="noopener noreferrer">Track package</a>{% endif %}</p>
+                      {% endif %}
+                      <div class="order-actions">
+                        {% if order.status == 'Pending Payment' or order.status == 'Placed' or order.status == 'Packed' %}
+                        <form method="post" action="{% url 'order_action' order.id %}">
+                            {% csrf_token %}<input type="hidden" name="action" value="cancel">
+                            <input type="text" name="reason" placeholder="Reason (optional)">
+                            <button type="submit" class="btn btn-outline-danger btn-sm">Cancel order</button>
+                        </form>
+                        {% elif order.status == 'Delivered' %}
+                        <form method="post" action="{% url 'order_action' order.id %}">
+                            {% csrf_token %}<input type="hidden" name="action" value="return">
+                            <input type="text" name="reason" placeholder="Return reason" required>
+                            <button type="submit" class="btn btn-outline-dark btn-sm">Request return</button>
+                        </form>
+                        {% endif %}
+                      </div>
+                    </article>
                     {% endfor %}
                 {% else %}
                     <div class="empty-state">

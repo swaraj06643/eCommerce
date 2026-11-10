@@ -1,0 +1,24 @@
+{% extends 'store/main.html' %}
+{% block content %}
+<div class="payment-redirect-card">
+    <h1>Continue to PayU</h1>
+    <p>Order {{ order.order_number }} · ₹{{ amount }}</p>
+    <p>You are being redirected to PayU's secure payment page. Do not refresh or close this page while payment is processing.</p>
+    <form id="payu-form" method="post" action="{{ gateway_url }}">
+        <input type="hidden" name="key" value="{{ key }}">
+        <input type="hidden" name="txnid" value="{{ transaction_id }}">
+        <input type="hidden" name="amount" value="{{ amount }}">
+        <input type="hidden" name="productinfo" value="{{ product_info }}">
+        <input type="hidden" name="firstname" value="{{ first_name }}">
+        <input type="hidden" name="email" value="{{ email }}">
+        <input type="hidden" name="phone" value="{{ order.customer.phone }}">
+        <input type="hidden" name="surl" value="{{ callback_url }}">
+        <input type="hidden" name="furl" value="{{ callback_url }}">
+        <input type="hidden" name="hash" value="{{ payu_hash }}">
+        <button class="btn btn-primary" type="submit">Continue to secure payment</button>
+    </form>
+</div>
+<script>
+    document.getElementById('payu-form').submit();
+</script>
+{% endblock content %}

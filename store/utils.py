@@ -1,85 +1,125 @@
 import json
-from .models import *
+import logging
+
+from django.db.models import F, Prefetch
+
+from .models import Customer, Order, OrderItem, Product, ProductVariant
+
+
+logger = logging.getLogger(__name__)
+
 
 def cookieCart(request):
-    # Create empty cart for now for non-logged in user
+    raw_cart = request.COOKIES.get('cart', '{}')
     try:
-        cart = json.loads(request.COOKIES['cart'])
-    except:
+        cart = json.loads(raw_cart)
+    except json.JSONDecodeError:
+        logger.warning('Ignoring malformed guest cart cookie.')
         cart = {}
-        print('CART:', cart)
+
+    if not isinstance(cart, dict):
+        logger.warning('Ignoring guest cart cookie with an invalid shape.')
+        cart = {}
+
+    product_ids = set()
+    parsed_lines = []
+    for key, entry in cart.items():
+        try:
+            product_id, separator, variant_id = str(key).partition(':')
+            product_id = int(product_id)
+            variant_id = int(variant_id) if separator and variant_id else None
+            quantity = int(entry['quantity'])
+        except (TypeError, ValueError, KeyError):
+            logger.warning('Ignoring invalid guest cart line.')
+            continue
+
+        if quantity <= 0:
+            continue
+        product_ids.add(product_id)
+        parsed_lines.append((product_id, variant_id, quantity))
+
+    products = {
+        product.id: product
+        for product in Product.objects.filter(id__in=product_ids).prefetch_related(
+            Prefetch('variants', queryset=ProductVariant.objects.filter(active=True), to_attr='active_variants')
+        )
+    }
 
     items = []
-    order = {'get_cart_total': 0, 'get_cart_items': 0, 'shipping': False}
-    cartItems = order['get_cart_items']
+    for product_id, variant_id, quantity in parsed_lines:
+        product = products.get(product_id)
+        if product is None:
+            continue
+        variant = next(
+            (item for item in product.active_variants if item.id == variant_id),
+            None,
+        ) if variant_id else None
+        if variant_id and variant is None:
+            continue
 
-    for i in cart:
-        # We use try block to prevent items in cart that may have been removed from causing error
-        try:
-            if (cart[i]['quantity'] > 0):  # items with negative quantity = lot of freebies
-                cartItems += cart[i]['quantity']
+        unit_price = product.price + (variant.price_adjustment if variant else 0)
+        items.append({
+            'id': product.id,
+            'product': product,
+            'variant': variant,
+            'variant_name': variant.display_value if variant else '',
+            'quantity': quantity,
+            'unit_price': unit_price,
+            'get_total': unit_price * quantity,
+            'digital': product.digital,
+        })
 
-                product = Product.objects.get(id=i)
-                total = (product.price * cart[i]['quantity'])
-
-                order['get_cart_total'] += total
-                order['get_cart_items'] += cart[i]['quantity']
-
-                item = {
-                    'id': product.id,
-                    'product': {'id': product.id, 'name': product.name, 'price': product.price,
-                                'imageURL': product.imageURL}, 'quantity': cart[i]['quantity'],
-                    'digital': product.digital, 'get_total': total,
-                }
-                items.append(item)
-
-                if product.digital == False:
-                    order['shipping'] = True
-        except:
-            pass
-
-    return {'cartItems': cartItems, 'order': order, 'items': items}
+    total_items = sum(item['quantity'] for item in items)
+    total = sum(item['get_total'] for item in items)
+    order = {
+        'get_cart_total': total,
+        'get_cart_items': total_items,
+        'shipping': any(item['digital'] is False for item in items),
+    }
+    return {'cartItems': total_items, 'order': order, 'items': items}
 
 
 def cartData(request):
     if request.user.is_authenticated:
-        customer = request.user.customer
-        order, created = Order.objects.get_or_create(customer=customer, complete=False)
-        items = order.orderitem_set.all()
-        cartItems = order.get_cart_items
-    else:
-        cookieData = cookieCart(request)
-        cartItems = cookieData['cartItems']
-        order = cookieData['order']
-        items = cookieData['items']
-
-    return {'cartItems': cartItems, 'order': order, 'items': items}
-
-
-def guestOrder(request, data):
-    name = data['form']['name']
-    email = data['form']['email']
-
-    cookieData = cookieCart(request)
-    items = cookieData['items']
-
-    customer, created = Customer.objects.get_or_create(
-        email=email,
-    )
-    customer.name = name
-    customer.save()
-
-    order = Order.objects.create(
-        customer=customer,
-        complete=False,
-    )
-
-    for item in items:
-        product = Product.objects.get(id=item['id'])
-        orderItem = OrderItem.objects.create(
-            product=product,
-            order=order,
-            quantity=(item['quantity'] if item['quantity'] > 0 else -1 * item['quantity']),
-            # negative quantity = freebies
+        customer, _ = Customer.objects.get_or_create(
+            user=request.user,
+            defaults={
+                'name': request.user.get_full_name() or request.user.username,
+                'email': request.user.email,
+            },
         )
-    return customer, order
+        order, _ = Order.objects.get_or_create(customer=customer, complete=False)
+        items = list(
+            order.orderitem_set.select_related('product', 'variant').all()
+        )
+        for item in items:
+            if item.unit_price is None and item.product_id:
+                item.unit_price = item.product.price + (
+                    item.variant.price_adjustment if item.variant_id else 0
+                )
+            if not item.variant_name and item.variant_id:
+                item.variant_name = item.variant.display_value
+        cart_items = sum(item.quantity for item in items)
+        total = sum(item.get_total for item in items)
+        order_data = {
+            'get_cart_total': total,
+            'get_cart_items': cart_items,
+            'shipping': any(
+                item.product_id and item.product.digital is False for item in items
+            ),
+        }
+        return {'cartItems': cart_items, 'order': order_data, 'items': items}
+
+    return cookieCart(request)
+
+
+def release_reserved_inventory(order):
+    if order.inventory_released:
+        return
+    for line in order.orderitem_set.select_related('product', 'variant').all():
+        if line.stock_source == 'variant' and line.variant_id:
+            ProductVariant.objects.filter(pk=line.variant_id).update(stock=F('stock') + line.quantity)
+        elif line.stock_source == 'product' and line.product_id:
+            Product.objects.filter(pk=line.product_id).update(stock=F('stock') + line.quantity)
+    order.inventory_released = True
+    order.save(update_fields=['inventory_released'])

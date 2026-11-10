@@ -7,10 +7,21 @@
         <p class="auth-subtitle">Welcome back to your shopping account.</p>
         <form method="post">
             {% csrf_token %}
+            <input type="hidden" name="next" value="{{ next }}">
             {{ form.as_p }}
             <button type="submit" class="btn btn-primary btn-block">Login</button>
         </form>
-        <p class="auth-switch">New to e-Commerce? <a href="{% url 'register' %}">Create an account</a></p>
+        <p class="auth-switch"><a href="{% url 'password_reset' %}">Forgot your password?</a></p>
+        <div class="auth-divider"><span>OR</span></div>
+        <h3 class="auth-method-title">Login with phone OTP</h3>
+        <form method="post" action="{% url 'phone_login_request' %}">
+            {% csrf_token %}
+            <input type="hidden" name="next" value="{{ next }}">
+            <label for="login-phone">Indian mobile number</label>
+            <input id="login-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="10-digit mobile number" pattern="[0-9+ -]{10,16}" required>
+            <button type="submit" class="btn btn-outline-dark btn-block">Send OTP</button>
+        </form>
+        <p class="auth-switch">New to Avatar? <a href="{% url 'register' %}">Create an account</a></p>
     </div>
 </div>
 {% endblock %}

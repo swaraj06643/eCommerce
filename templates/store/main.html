@@ -2,10 +2,10 @@
 {% load static %}
 <html>
     <head>
-           <title>e-Commerce | Modern Basics, Radical Transparency</title>
+           <title>{% block title %}Avatar Store | Find your next favourite thing{% endblock title %}</title>
 
             <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1" />
-            <link rel="shortcut icon" type="images" href="{% static 'images/icon.ico' %}">
+            <link rel="icon" type="image/svg+xml" href="{% static 'images/avatar-mark.svg' %}">
             <link rel="stylesheet" type="text/css" href="{% static 'css/main.css' %}">
             <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css" integrity="sha384-Gn5384xqQ1aoWXA+058RXPxPg6fy4IWvTNh0E263XmFcJlSAwiGgFAW/dAiS6JXm" crossorigin="anonymous">
           
@@ -13,6 +13,7 @@
             <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
             <link href="https://fonts.googleapis.com/css2?family=Glory:wght@500&display=swap" rel="stylesheet">
 
+            <script>document.documentElement.classList.add('js');</script>
 
             <script type="text/javascript">
 
@@ -67,6 +68,15 @@
      </head>
      <body class="shop-body" style="font-family: 'Glory', sans-serif;">
 
+        <div class="avatar-splash" id="avatar-splash" role="status" aria-label="Welcome to Avatar Store">
+            <div class="splash-brand">
+                <img src="{% static 'images/avatar-mark.svg' %}" alt="">
+                <p class="splash-wordmark">Avatar <span>Store</span></p>
+                <p class="splash-tagline">A brighter way to shop</p>
+                <span class="splash-loader" aria-hidden="true"></span>
+            </div>
+        </div>
+
         <div id="cart-toast" class="cart-toast" aria-live="polite">
             <span>Added to bag</span>
             <a href="{% url 'cart' %}">Go to Bag</a>
@@ -74,7 +84,7 @@
 
         <div class="top-strip">FRESH FINDS, EVERY DAY <span>•</span> SHOP YOUR FAVOURITES</div>
         <nav class="navbar navbar-expand-lg shop-navbar">
-          <a class="navbar-brand shop-brand" href="{% url 'store' %}"><img width="40px" height="40px" src="{% static 'images/logo.png' %}"><span>e-Commerce</span></a>
+          <a class="navbar-brand shop-brand" href="{% url 'store' %}"><img width="40px" height="40px" src="{% static 'images/avatar-mark.svg' %}" alt=""><span>Avatar</span></a>
           <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarSupportedContent" aria-controls="navbarSupportedContent" aria-expanded="false" aria-label="Toggle navigation">
             <span class="navbar-toggler-icon">&#9776;</span>
           </button>
@@ -91,8 +101,13 @@
                   <a class="nav-link" href="{% url 'account' %}">Account</a>
               </li>
               <li class="nav-item">
-                  <a class="nav-link" href="#" title="Wishlist">Wishlist</a>
+                  <a class="nav-link" href="{% url 'help' %}">Help</a>
               </li>
+              {% if request.user.is_staff %}
+              <li class="nav-item">
+                  <a class="nav-link" href="{% url 'analytics' %}">Analytics</a>
+              </li>
+              {% endif %}
             </ul>
 
               <div class="form-inline shop-actions my-2 my-lg-0">
@@ -113,6 +128,13 @@
 
          <div class="container">
                 <br>
+                {% if messages %}
+                <div class="site-messages">
+                    {% for message in messages %}
+                    <div class="alert alert-{{ message.tags|default:'info' }}" role="status">{{ message }}</div>
+                    {% endfor %}
+                </div>
+                {% endif %}
                 {% block content %}
 
 
@@ -120,7 +142,7 @@
                 <br>
          </div>
 
-      <footer class="shop-footer">© Build by Ruhul Amin Parvez with love</footer>
+      <footer class="shop-footer">Avatar Store <span aria-hidden="true">·</span> Created by Subhasiosh Rath, Odisha <span aria-hidden="true">·</span> <a href="{% url 'help' %}">Help &amp; support</a></footer>
 
       <script src="https://code.jquery.com/jquery-3.4.1.slim.min.js" integrity="sha384-J6qa4849blE2+poT4WnyKhv5vZF5SrPo0iEjwBvKU7imGFAV0wwj1yYfoRSJoZ+n" crossorigin="anonymous"></script>
 
@@ -129,5 +151,7 @@
 	    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/js/bootstrap.min.js" integrity="sha384-wfSDF2E50Y2D1uUdj0O3uMBJnjuUD4Ih7YwaYd1iqfktj0Uod8GCExl3Og8ifwB6" crossorigin="anonymous"></script>
 
       <script type="text/javascript" src="{% static 'js/cart.js' %}"></script>
+      <script type="text/javascript" src="{% static 'js/splash.js' %}"></script>
+      {% block extra_scripts %}{% endblock %}
      </body>
 </html>

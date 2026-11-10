@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">Avatar rising sun mark</title>
+  <circle cx="32" cy="32" r="31" fill="#fff0e9"/>
+  <circle cx="32" cy="37" r="8" fill="#e46b5d"/>
+  <path d="M12 51 27.1 15.7a5.3 5.3 0 0 1 9.8 0L52 51M22 37h20" fill="none" stroke="#29211f" stroke-linecap="round" stroke-linejoin="round" stroke-width="5"/>
+  <path d="M24 13 32 7l8 6" fill="none" stroke="#e46b5d" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"/>
+</svg>

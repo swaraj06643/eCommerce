@@ -7,7 +7,6 @@
             <button type="submit">Search</button>
         </form>
      </div>
-
      <section class="shop-hero">
         <div class="hero-copy">
             <p class="hero-kicker">THE EVERYDAY EDIT</p>
@@ -27,28 +26,67 @@
      <section class="collection-section" id="products">
         <div class="collection-heading">
             <div>
+                {% if search_term %}
+                <p class="section-kicker">SEARCH RESULTS FOR “{{ search_term }}”</p>
+                <h2>{{ products|length }} result{{ products|length|pluralize }}</h2>
+                {% else %}
                 <p class="section-kicker">A LITTLE BIT OF EVERYTHING</p>
                 <h2>Popular picks</h2>
+                {% endif %}
             </div>
             <span class="collection-note">Made for your everyday</span>
         </div>
+        {% if search_term %}
+        <form class="catalog-filters" method="get" action="{% url 'store' %}" aria-label="Filter search results">
+            <input type="hidden" name="q" value="{{ search_term }}">
+            <label>Category
+                <select name="category">
+                    <option value="">All categories</option>
+                    {% for category in categories %}
+                    <option value="{{ category.slug }}" {% if selected_category == category.slug %}selected{% endif %}>{{ category.name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>Min price <input type="number" name="min_price" min="0" step="0.01" value="{{ min_price }}" placeholder="₹ Min"></label>
+            <label>Max price <input type="number" name="max_price" min="0" step="0.01" value="{{ max_price }}" placeholder="₹ Max"></label>
+            <label>Options <input type="search" name="variant" value="{{ variant_filter }}" placeholder="Color, size"></label>
+            <label>Sort
+                <select name="sort">
+                    <option value="popular" {% if selected_sort == 'popular' %}selected{% endif %}>Name</option>
+                    <option value="price_low" {% if selected_sort == 'price_low' %}selected{% endif %}>Price: low to high</option>
+                    <option value="price_high" {% if selected_sort == 'price_high' %}selected{% endif %}>Price: high to low</option>
+                </select>
+            </label>
+            <button type="submit">Apply</button>
+            <a href="{% url 'store' %}?q={{ search_term|urlencode }}">Clear</a>
+        </form>
+        {% endif %}
         <div class="row product-grid">
       {% for product in products %}
         <div class="col-lg-3 col-md-4 col-sm-6 product-column">
             <article class="product-card">
                 <div class="product-image-wrap">
-                    <img class="thumbnail" src="{{ product.imageURL }}" alt="{{ product.name }}">
+                    <a href="{% url 'product_detail' product.id %}" aria-label="View {{ product.name }} details">
+                        <img class="thumbnail" src="{{ product.imageURL }}" alt="{{ product.name }}">
+                    </a>
                     <span class="product-tag">POPULAR</span>
                 </div>
                 <div class="product-info">
-                    <h3>{{ product.name }}</h3>
+                    {% if product.category %}<p class="product-category">{{ product.category.name }}</p>{% endif %}
+                    <h3><a class="product-title-link" href="{% url 'product_detail' product.id %}">{{ product.name }}</a></h3>
                     <div class="product-bottom">
                         <strong class="product-price">&#8377;{{ product.price|floatformat:2 }}</strong>
-                        <button data-product="{{ product.id }}" data-action="add" class="add-to-bag update-cart" aria-label="Add {{ product.name }} to cart">+</button>
+                        {% if product.has_variants %}
+                        <a class="add-to-bag choose-options" href="{% url 'product_detail' product.id %}" aria-label="Choose options for {{ product.name }}">Choose</a>
+                        {% else %}
+                        <button data-product="{{ product.id }}" data-action="add" class="add-to-bag update-cart" aria-label="Add {{ product.name }} to cart" {% if product.stock == 0 %}disabled{% endif %}>+</button>
+                        {% endif %}
                     </div>
                 </div>
             </article>
         </div>
+      {% empty %}
+        <div class="col-12"><p class="empty-state">No products match these filters. <a href="{% url 'store' %}">Clear filters</a></p></div>
       {% endfor %}
         </div>
      </section>

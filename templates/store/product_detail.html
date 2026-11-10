@@ -1,0 +1,96 @@
+{% extends 'store/main.html' %}
+{% load static %}
+{% block title %}{{ product.name }} | Avatar Store{% endblock title %}
+{% block content %}
+<div class="detail-breadcrumb">
+    <a href="{% url 'store' %}">Home</a><span aria-hidden="true">/</span><span>{{ product.name }}</span>
+</div>
+
+<section class="product-detail">
+    <div class="detail-image-panel">
+        {% if product.imageURL %}
+            <img class="detail-image" src="{{ product.imageURL }}" alt="{{ product.name }}">
+        {% else %}
+            <img class="detail-image detail-image-placeholder" src="{% static 'images/placeholder.png' %}" alt="{{ product.name }}">
+        {% endif %}
+    </div>
+
+    <div class="detail-information">
+        <p class="section-kicker">AVATAR EVERYDAY EDIT</p>
+        <h1>{{ product.name }}</h1>
+        <p class="detail-description">{{ product.description|default:"Product details will be updated soon. Contact us if you need more information." }}</p>
+
+        <div class="detail-price-block">
+            <strong class="detail-price" data-base-price="{{ product.price }}" data-list-price="{{ product.list_price|default_if_none:'' }}">&#8377;{{ product.price|floatformat:2 }}</strong>
+            {% if has_offer %}
+                <del class="detail-list-price">&#8377;{{ product.list_price|floatformat:2 }}</del>
+                <span class="detail-discount">{{ discount_percent }}% off</span>
+            {% endif %}
+            <p class="detail-tax-note">Price shown in Indian rupees.</p>
+        </div>
+
+        {% if variants %}
+        <div class="detail-variant-select">
+            <label for="product-variant">Choose an option</label>
+            <select id="product-variant" required>
+                <option value="">Select an option</option>
+                {% for variant in variants %}
+                <option value="{{ variant.id }}" data-adjustment="{{ variant.price_adjustment }}" data-stock="{% if variant.stock is not None %}{{ variant.stock }}{% else %}{{ product.stock|default_if_none:'' }}{% endif %}">{{ variant.display_value }}{% if variant.stock is not None %} — {{ variant.stock }} available{% elif product.stock is not None %} — {{ product.stock }} available{% endif %}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <p class="detail-stock" id="detail-stock-message">Choose an option to see its stock and pricing.</p>
+        {% endif %}
+        {% if not variants %}<p class="detail-stock" id="detail-stock-message">
+            {% if product.stock is not None %}{% if product.stock %}{{ product.stock }} in stock{% else %}Currently out of stock{% endif %}
+            {% else %}Stock availability is confirmed when you place your order.{% endif %}
+        </p>{% endif %}
+
+        <section class="detail-offers" aria-labelledby="offers-heading">
+            <h2 id="offers-heading">Offers &amp; payment</h2>
+            {% if product.offer_text %}
+                <p>{{ product.offer_text }}</p>
+            {% elif has_offer %}
+                <p>The reduced price is shown above. No additional product offer is listed.</p>
+            {% else %}
+                <p>No additional offer is listed for this product right now. The price above is the current store price.</p>
+            {% endif %}
+            <p class="detail-payment-note">Available payment methods are shown at checkout.</p>
+        </section>
+
+        <form class="delivery-check" id="delivery-check" data-check-url="{% url 'check_delivery' %}">
+            {% csrf_token %}
+            <label for="delivery-pin">Check delivery information</label>
+            <div class="delivery-check-row">
+                <input id="delivery-pin" name="pin" type="text" inputmode="numeric" autocomplete="postal-code"
+                       pattern="[1-9][0-9]{5}" maxlength="6" placeholder="Enter 6-digit PIN code" required
+                       aria-describedby="delivery-message">
+                <button type="submit">Check</button>
+            </div>
+            <p id="delivery-message" class="delivery-message" aria-live="polite">
+                Check whether this PIN code has a delivery post office listed in the Indian postal directory.
+            </p>
+        </form>
+
+        <div class="detail-actions">
+            <button type="button" data-product="{{ product.id }}" data-action="add" class="detail-add update-cart" {% if product.stock == 0 and not variants %}disabled{% endif %}>Add to bag</button>
+            <button type="button" data-product="{{ product.id }}" data-action="add" data-after-add="{% url 'checkout' %}" class="detail-buy update-cart" {% if product.stock == 0 and not variants %}disabled{% endif %}>Buy now</button>
+        </div>
+
+        <div class="detail-service-notes">
+            <p><strong>Delivery address</strong><span>Add your full address and PIN code at checkout.</span></p>
+            <p><strong>Order updates</strong><span>Track placed orders from your Avatar account.</span></p>
+        </div>
+    </div>
+</section>
+
+<section class="detail-description-panel">
+    <h2>Product details</h2>
+    <p>{{ product.description|default:"Product details will be updated soon. Contact us if you need more information." }}</p>
+    <a href="{% url 'help' %}">Questions about this product? Visit Help &amp; support</a>
+</section>
+{% endblock content %}
+
+{% block extra_scripts %}
+<script src="{% static 'js/product-detail.js' %}"></script>
+{% endblock extra_scripts %}

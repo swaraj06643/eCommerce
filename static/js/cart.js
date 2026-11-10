@@ -14,6 +14,13 @@ for (i = 0; i < updateBtns.length; i++) {
 	updateBtns[i].addEventListener('click', function(){
 		var productId = this.dataset.product
 		var action = this.dataset.action
+		var afterAdd = this.dataset.afterAdd
+		var variantSelector = document.getElementById('product-variant')
+		var variantId = variantSelector ? variantSelector.value : (this.dataset.variantId || '')
+		if (variantSelector && !variantId) {
+			variantSelector.reportValidity()
+			return
+		}
 		console.log('productId:', productId, 'Action:', action)
 		console.log('USER:', user)
 
@@ -22,40 +29,46 @@ for (i = 0; i < updateBtns.length; i++) {
 		}
 
 		if (user == 'AnonymousUser'){
-			addCookieItem(productId, action)
+			addCookieItem(productId, action, afterAdd, variantId)
 		}else{
-			updateUserOrder(productId, action)
+			updateUserOrder(productId, action, afterAdd, variantId)
 		}
 	})
 }
 
-function addCookieItem(productId, action){
+function addCookieItem(productId, action, afterAdd, variantId){
 	console.log('User is not authenticated')
+	var cartKey = variantId ? productId + ':' + variantId : productId
 
 	if (action == 'add'){
-		if (cart[productId] == undefined){
-		cart[productId] = {'quantity':1}
+		if (cart[cartKey] == undefined){
+		cart[cartKey] = {'quantity':1}
 
 		}else{
-			cart[productId]['quantity'] += 1
+			cart[cartKey]['quantity'] += 1
 		}
 	}
 
 	if (action == 'remove'){
-		cart[productId]['quantity'] -= 1
+		if (cart[cartKey] == undefined) return
+		cart[cartKey]['quantity'] -= 1
 
-		if (cart[productId]['quantity'] <= 0){
+		if (cart[cartKey]['quantity'] <= 0){
 			console.log('Item should be deleted')
-			delete cart[productId];
+			delete cart[cartKey];
 		}
 	}
 	console.log('CART:', cart)
 	document.cookie ='cart=' + JSON.stringify(cart) + ";domain=;path=/"
 
-	location.reload()
+	if (afterAdd) {
+		location.assign(afterAdd)
+	} else {
+		location.reload()
+	}
 }
 
-function updateUserOrder(productId, action){
+function updateUserOrder(productId, action, afterAdd, variantId){
 	console.log('User is authenticated, sending data...')
 
 		var url = '/update_item/'
@@ -66,13 +79,23 @@ function updateUserOrder(productId, action){
 				'Content-Type':'application/json',
 				'X-CSRFToken':csrftoken,
 			},
-			body:JSON.stringify({'productId':productId, 'action':action})
+			body:JSON.stringify({'productId':productId, 'variantId':variantId, 'action':action})
 		})
 		.then((response) => {
+		   if (!response.ok) {
+		       throw new Error('The server could not update your bag.')
+		   }
 		   return response.json();
 		})
 		.then((data) => {
-		    location.reload()
+		    if (afterAdd) {
+		        location.assign(afterAdd)
+		    } else {
+		        location.reload()
+		    }
+		})
+		.catch((error) => {
+		    console.error('Could not update the bag.', error)
+		    window.alert('We could not update your bag. Please try again.')
 		});
 }
-

@@ -7,6 +7,18 @@
         <p class="auth-subtitle">Sign up to track orders and save your shopping preferences.</p>
         <form method="post">
             {% csrf_token %}
+            <p>
+                <label for="id_first_name">Full name</label>
+                <input id="id_first_name" name="first_name" type="text" autocomplete="name" required>
+            </p>
+            <p>
+                <label for="id_email">Email</label>
+                <input id="id_email" name="email" type="email" autocomplete="email" required>
+            </p>
+            <p>
+                <label for="id_phone">Indian phone (optional; enables OTP login)</label>
+                <input id="id_phone" name="phone" type="tel" autocomplete="tel" inputmode="tel" placeholder="10-digit mobile number" pattern="[0-9+ -]{10,16}">
+            </p>
             {{ form.as_p }}
             <button type="submit" class="btn btn-primary btn-block">Register</button>
         </form>

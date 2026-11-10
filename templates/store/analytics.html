@@ -1,0 +1,29 @@
+{% extends 'store/main.html' %}
+{% block title %}Store analytics | Avatar{% endblock title %}
+{% block content %}
+<section class="analytics-page">
+    <p class="section-kicker">STAFF DASHBOARD</p>
+    <h1>Store analytics</h1>
+    <div class="analytics-grid">
+        <article class="analytics-card"><span>Paid revenue</span><strong>₹{{ revenue|floatformat:2 }}</strong></article>
+        <article class="analytics-card"><span>Estimated profit</span><strong>₹{{ profit|floatformat:2 }}</strong><small>Based on recorded costs for {{ profit_products_count }} product line{{ profit_products_count|pluralize }}.</small></article>
+        <article class="analytics-card"><span>Paid orders</span><strong>{{ paid_order_count }}</strong></article>
+        <article class="analytics-card"><span>Product visitors</span><strong>{{ visitors }}</strong></article>
+        <article class="analytics-card"><span>Visitor conversion</span><strong>{{ conversion_rate|floatformat:1 }}%</strong><small>{{ converted_visitors }} distinct visitor{{ converted_visitors|pluralize }} with paid orders.</small></article>
+        <article class="analytics-card"><span>Low-stock products</span><strong>{{ low_stock_products }}</strong></article>
+    </div>
+    <p class="analytics-note">Revenue and profit include only confirmed paid orders; unconfigured product costs are excluded from profit. Product visits use a session identifier.</p>
+
+    <div class="account-card">
+        <h2>Top products by paid units</h2>
+        {% for product in top_products %}
+        <div class="analytics-product-row">
+            <span>{{ product.name }}</span>
+            <strong>{{ product.units_sold|default:0 }}</strong>
+        </div>
+        {% empty %}
+        <p>No paid sales yet.</p>
+        {% endfor %}
+    </div>
+</section>
+{% endblock content %}
