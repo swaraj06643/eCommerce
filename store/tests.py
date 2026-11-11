@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import re
 from datetime import timedelta
 from urllib.parse import parse_qs, urlsplit
@@ -11,6 +12,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 from django.test import override_settings
+from unittest.mock import patch as mock_patch
 
 from .models import (
     Category,
@@ -21,10 +23,12 @@ from .models import (
     Payment,
     Product,
     ProductVariant,
+    SellerStore,
     ShippingAddress,
 )
 from .postal import PostalLookupError, validate_delivery_location
 from .sms import send_phone_otp, verify_phone_otp
+from eCommerce.settings import database_config
 
 
 class StorefrontTests(TestCase):
@@ -167,6 +171,40 @@ class StorefrontTests(TestCase):
         self.assertEqual(order.get_cart_total, 358.0)
         self.assertTrue(Payment.objects.filter(order=order, amount=358.0).exists())
         self.assertTrue(ShippingAddress.objects.filter(order=order, zipcode='751001').exists())
+
+    def test_signed_in_customer_can_checkout_without_email_verification(self):
+        user = User.objects.create_user(
+            username='signedinbuyer',
+            email='buyer@example.com',
+            password='SafePassword!123',
+        )
+        Customer.objects.create(
+            user=user,
+            name='Signed-in Buyer',
+            email='buyer@example.com',
+            email_verified=False,
+            phone='+919876543210',
+            phone_e164='+919876543210',
+        )
+        self.client.force_login(user)
+        open_order = Order.objects.create(customer=user.customer, complete=False)
+        OrderItem.objects.create(
+            order=open_order,
+            product=self.product,
+            quantity=1,
+            unit_price=self.product.price,
+        )
+
+        response = self.client.post(reverse('checkout'), {
+            'payment_method': 'cod',
+            'address': '12 Market Road',
+            'city': 'Bhubaneswar',
+            'state': 'Odisha',
+            'zipcode': '751001',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(Order.objects.filter(customer=user.customer, complete=True).exists())
 
     def test_checkout_blocks_unverified_email(self):
         EmailVerification.objects.filter(email='buyer@example.com').delete()
@@ -664,6 +702,121 @@ class StorefrontTests(TestCase):
         self.assertEqual(user.customer.name, 'Avatar Buyer')
         self.assertEqual(user.customer.phone, '+919876543210')
         self.assertEqual(user.customer.phone_e164, '+919876543210')
+        self.assertTrue(user.is_active)
+        self.assertEqual(int(self.client.session['_auth_user_id']), user.id)
+
+    def test_registration_and_email_password_login_do_not_require_verification(self):
+        response = self.client.post(reverse('register'), {
+            'username': 'verifiedbuyer',
+            'password1': 'SafePassword!123',
+            'password2': 'SafePassword!123',
+            'first_name': 'Verified Buyer',
+            'email': 'verifiedbuyer@example.com',
+            'phone': '',
+        })
+        self.assertRedirects(response, reverse('account'))
+        user = User.objects.get(username='verifiedbuyer')
+        self.assertTrue(user.is_active)
+        self.assertFalse(EmailVerification.objects.filter(user=user).exists())
+        self.assertEqual(int(self.client.session['_auth_user_id']), user.id)
+        self.client.post(reverse('logout'))
+
+        response = self.client.post(reverse('login'), {
+            'username': 'verifiedbuyer@example.com',
+            'password': 'SafePassword!123',
+        })
+        self.assertRedirects(response, reverse('account'))
+        self.assertEqual(int(self.client.session['_auth_user_id']), user.id)
+
+    def test_database_url_configures_neon_postgresql_without_exposing_credentials(self):
+        with mock_patch.dict(os.environ, {
+            'DATABASE_URL': (
+                'postgresql://sample-user:sample-password@db.example.test/store'
+                '?sslmode=require&channel_binding=require'
+            ),
+        }):
+            config = database_config()
+
+        self.assertEqual(config['ENGINE'], 'django.db.backends.postgresql')
+        self.assertEqual(config['NAME'], 'store')
+        self.assertEqual(config['USER'], 'sample-user')
+        self.assertEqual(config['HOST'], 'db.example.test')
+        self.assertEqual(config['OPTIONS'], {
+            'sslmode': 'require',
+            'channel_binding': 'require',
+        })
+
+    def test_seller_portal_has_its_own_login_and_signup_routes(self):
+        login_response = self.client.get(reverse('seller_login'))
+        register_response = self.client.get(reverse('seller_register'))
+        shopper_login_response = self.client.get(reverse('login'))
+
+        self.assertEqual(login_response.status_code, 200)
+        self.assertContains(login_response, 'Avatar Seller')
+        self.assertContains(login_response, 'Continue to seller panel')
+        self.assertEqual(register_response.status_code, 200)
+        self.assertContains(register_response, 'Create seller account')
+        self.assertNotContains(login_response, 'Resend verification email')
+        self.assertNotContains(register_response, 'Shopping account')
+        self.assertContains(shopper_login_response, 'Seller login')
+
+    def test_seller_signup_logs_in_without_email_verification(self):
+        response = self.client.post(reverse('seller_register'), {
+            'username': 'newdealer',
+            'password1': 'SafePassword!123',
+            'password2': 'SafePassword!123',
+            'first_name': 'New Dealer',
+            'email': 'newdealer@example.com',
+            'phone': '',
+        })
+        self.assertRedirects(response, reverse('seller_dashboard'))
+        user = User.objects.get(username='newdealer')
+        self.assertTrue(user.is_active)
+        self.assertFalse(EmailVerification.objects.filter(user=user).exists())
+        self.assertEqual(int(self.client.session['_auth_user_id']), user.id)
+
+    def test_account_settings_has_be_a_seller_entry(self):
+        response = self.client.get(reverse('account_settings'))
+        self.assertEqual(response.status_code, 302)
+
+        user = User.objects.create_user(username='settings-user', password='safe-password')
+        self.client.force_login(user)
+        response = self.client.get(reverse('account_settings'))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Be a seller')
+        self.assertContains(response, 'Seller login')
+        self.assertContains(response, reverse('seller_login'))
+        self.assertContains(response, reverse('seller_register'))
+
+    def test_account_shows_seller_login_and_start_selling_links(self):
+        user = User.objects.create_user(username='account-user', password='safe-password')
+        self.client.force_login(user)
+
+        response = self.client.get(reverse('account'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Seller login')
+        self.assertContains(response, reverse('seller_login'))
+        self.assertContains(response, 'Be a seller')
+        self.assertContains(response, reverse('seller_register'))
+
+    def test_inactive_legacy_user_can_log_in_with_correct_password(self):
+        user = User.objects.create_user(
+            username='legacy-inactive',
+            email='legacy@example.com',
+            password='SafePassword!123',
+            is_active=False,
+        )
+
+        response = self.client.post(reverse('seller_login'), {
+            'username': 'legacy@example.com',
+            'password': 'SafePassword!123',
+        })
+
+        self.assertRedirects(response, reverse('seller_dashboard'))
+        user.refresh_from_db()
+        self.assertTrue(user.is_active)
+        self.assertEqual(int(self.client.session['_auth_user_id']), user.id)
 
     def test_analytics_is_staff_only(self):
         anonymous_response = self.client.get(reverse('analytics'))
@@ -674,3 +827,156 @@ class StorefrontTests(TestCase):
         staff_response = self.client.get(reverse('analytics'))
         self.assertEqual(staff_response.status_code, 200)
         self.assertContains(staff_response, 'Store analytics')
+
+    def test_seller_dashboard_requires_login_and_allows_store_setup(self):
+        response = self.client.get(reverse('seller_dashboard'))
+        self.assertEqual(response.status_code, 302)
+
+        seller = User.objects.create_user(username='seller', password='seller-password')
+        self.client.force_login(seller)
+        response = self.client.get(reverse('seller_dashboard'))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Open your seller store')
+
+        response = self.client.post(reverse('seller_dashboard'), {
+            'action': 'save_store',
+            'name': 'Northside Goods',
+            'description': 'Useful finds for everyday life.',
+        })
+        self.assertRedirects(response, reverse('seller_dashboard'))
+        self.assertTrue(SellerStore.objects.filter(owner=seller, name='Northside Goods').exists())
+
+    def test_seller_can_create_and_edit_only_owned_listings(self):
+        seller = User.objects.create_user(username='seller', password='seller-password')
+        seller_store = SellerStore.objects.create(
+            owner=seller,
+            name='Northside Goods',
+            description='Useful finds for everyday life.',
+        )
+        self.client.force_login(seller)
+        response = self.client.post(reverse('seller_dashboard'), {
+            'action': 'save_product',
+            'name': 'Canvas Day Bag',
+            'price': '420',
+            'description': 'A roomy everyday bag for carrying books, a water bottle and daily essentials.',
+            'stock': '8',
+            'low_stock_threshold': '2',
+            'is_active': 'on',
+        })
+
+        self.assertRedirects(response, reverse('seller_dashboard'))
+        product = Product.objects.get(name='Canvas Day Bag')
+        self.assertEqual(product.seller_store, seller_store)
+        self.assertTrue(product.is_active)
+
+        other_store = SellerStore.objects.create(
+            owner=User.objects.create_user(username='other-seller', password='seller-password'),
+            name='Other Goods',
+            description='Another shop.',
+        )
+        other_product = Product.objects.create(
+            seller_store=other_store,
+            name='Other listing',
+            price=10,
+        )
+        response = self.client.post(reverse('seller_dashboard'), {
+            'action': 'edit_product',
+            'product_id': other_product.pk,
+        })
+        self.assertEqual(response.status_code, 404)
+
+    def test_seller_listing_requires_useful_copy_and_finite_price(self):
+        seller = User.objects.create_user(username='seller', password='seller-password')
+        SellerStore.objects.create(
+            owner=seller,
+            name='Northside Goods',
+            description='Useful finds for everyday life.',
+        )
+        self.client.force_login(seller)
+        response = self.client.post(reverse('seller_dashboard'), {
+            'action': 'save_product',
+            'name': 'Incomplete listing',
+            'price': 'NaN',
+            'description': 'Too short.',
+            'is_active': 'on',
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Product.objects.filter(name='Incomplete listing').exists())
+        self.assertContains(response, 'Enter a number.')
+        self.assertContains(response, 'Ensure this value has at least 40 characters')
+
+    def test_seller_vault_counts_only_its_paid_and_pending_lines(self):
+        seller = User.objects.create_user(username='seller', password='seller-password')
+        seller_store = SellerStore.objects.create(
+            owner=seller,
+            name='Northside Goods',
+            description='Useful finds for everyday life.',
+        )
+        seller_product = Product.objects.create(
+            seller_store=seller_store,
+            name='Seller product',
+            price=20,
+        )
+        Product.objects.create(name='Unowned product', price=100)
+        paid_order = Order.objects.create(
+            complete=True,
+            status='Placed',
+            payment_status='paid',
+        )
+        OrderItem.objects.create(
+            order=paid_order,
+            product=seller_product,
+            quantity=2,
+            unit_price=20,
+        )
+        pending_order = Order.objects.create(
+            complete=True,
+            status='Placed',
+            payment_status='pending_review',
+        )
+        OrderItem.objects.create(
+            order=pending_order,
+            product=seller_product,
+            quantity=1,
+            unit_price=20,
+        )
+        cancelled_order = Order.objects.create(
+            complete=True,
+            status='Cancelled',
+            payment_status='paid',
+        )
+        OrderItem.objects.create(
+            order=cancelled_order,
+            product=seller_product,
+            quantity=1,
+            unit_price=20,
+        )
+
+        self.client.force_login(seller)
+        response = self.client.get(reverse('seller_dashboard'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['paid_sales'], 40)
+        self.assertEqual(response.context['awaiting_payment'], 20)
+        self.assertContains(response, 'Vault figures are order records')
+
+    def test_inactive_seller_listing_is_hidden_from_storefront(self):
+        seller = User.objects.create_user(username='seller', password='seller-password')
+        seller_store = SellerStore.objects.create(
+            owner=seller,
+            name='Northside Goods',
+            description='Useful finds for everyday life.',
+        )
+        product = Product.objects.create(
+            seller_store=seller_store,
+            name='Hidden product',
+            price=20,
+            is_active=False,
+        )
+
+        self.assertEqual(self.client.get(reverse('store')).status_code, 200)
+        self.assertEqual(
+            self.client.get(reverse('product_detail', args=[product.pk])).status_code,
+            404,
+        )

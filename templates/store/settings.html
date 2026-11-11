@@ -1,0 +1,32 @@
+{% extends 'store/main.html' %}
+{% block title %}Settings | Avatar Store{% endblock title %}
+{% block content %}
+<section class="account-page settings-page">
+    <header class="account-header">
+        <div>
+            <p class="section-kicker">ACCOUNT PREFERENCES</p>
+            <h1>Settings</h1>
+            <p class="settings-intro">Manage your account and choose how you use Avatar.</p>
+        </div>
+        <a href="{% url 'account' %}" class="btn btn-outline-dark">Account</a>
+    </header>
+
+    <div class="settings-options">
+        <article class="account-card">
+            <p class="section-kicker">SHOPPING ACCOUNT</p>
+            <h2>Profile and email</h2>
+            <p>Update your contact details and check your email verification status.</p>
+            <a class="seller-settings-link" href="{% url 'account' %}">Manage account <span aria-hidden="true">→</span></a>
+        </article>
+        <article class="account-card settings-seller-card">
+            <p class="section-kicker">SELL ON AVATAR</p>
+            <h2>Ready to be a seller?</h2>
+            <p>Open the dedicated seller website to sign in or register, create your store, publish listings and manage inventory.</p>
+            <div class="account-seller-actions">
+                <a class="seller-settings-link seller-login-link" href="{% url 'seller_login' %}">Seller login</a>
+                <a class="seller-settings-link" href="{% url 'seller_register' %}">Be a seller</a>
+            </div>
+        </article>
+    </div>
+</section>
+{% endblock content %}

@@ -9,6 +9,18 @@
         <a href="{% url 'logout' %}" class="btn btn-outline-dark">Logout</a>
     </div>
 
+    <section class="account-seller-banner">
+        <div>
+            <p class="section-kicker">SELL ON AVATAR</p>
+            <h3>Sell with Avatar</h3>
+            <p>Sign in to Seller Center or create your seller store to manage products and inventory.</p>
+        </div>
+        <div class="account-seller-actions">
+            <a href="{% url 'seller_login' %}" class="seller-settings-link seller-login-link">Seller login</a>
+            <a href="{% url 'seller_register' %}" class="seller-settings-link">Be a seller</a>
+        </div>
+    </section>
+
     <div class="row account-grid">
         <div class="col-lg-4">
             <div class="account-card profile-card">
@@ -25,23 +37,7 @@
                     <input id="profile-phone" type="tel" name="phone" value="{{ customer.phone|default:'' }}" autocomplete="tel">
                     <button class="btn btn-primary btn-block" type="submit">Save profile</button>
                 </form>
-                {% if customer.email_verified %}
-                <p class="email-verified" role="status">Email verified</p>
-                {% else %}
-                <p class="email-verification-note">Verify your email before placing an order.</p>
-                <form method="post" action="{% url 'request_email_verification' %}">
-                    {% csrf_token %}
-                    <input type="hidden" name="email" value="{{ customer.email|default:user.email }}">
-                    <button class="btn btn-outline-dark btn-block" type="submit">Send verification link</button>
-                </form>
-                <form method="post" action="{% url 'verify_email_otp' %}" class="email-otp-form">
-                    {% csrf_token %}
-                    <input type="hidden" name="email" value="{{ customer.email|default:user.email }}">
-                    <label for="account-email-otp">Email verification code</label>
-                    <input id="account-email-otp" name="otp" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
-                    <button class="btn btn-outline-dark btn-block" type="submit">Verify code</button>
-                </form>
-                {% endif %}
+                <p class="email-verification-note">Sign-in uses your username or email and password.</p>
             </div>
         </div>
 

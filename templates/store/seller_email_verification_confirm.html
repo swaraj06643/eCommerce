@@ -1,0 +1,14 @@
+{% extends 'store/seller_portal_base.html' %}
+{% block title %}Verify seller account | Avatar{% endblock title %}
+{% block content %}
+<section class="seller-verify-card">
+    <p class="section-kicker">ONE LAST STEP</p>
+    <h1>Verify your email</h1>
+    <p>Confirm <strong>{{ verification.email }}</strong> to activate your Avatar seller account.</p>
+    <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{{ next_url }}">
+        <button type="submit" class="seller-button">Verify and continue</button>
+    </form>
+</section>
+{% endblock content %}

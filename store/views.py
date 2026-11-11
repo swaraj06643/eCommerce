@@ -40,11 +40,13 @@ from .models import (
     Product,
     ProductVariant,
     ProductVisit,
+    SellerStore,
     ShippingAddress,
 )
 from .utils import cartData, release_reserved_inventory
 from .postal import PostalLookupError, validate_delivery_location
 from .sms import SMSProviderError, send_phone_otp, verify_phone_otp
+from .forms import SellerProductForm, SellerStoreForm
 
 
 logger = logging.getLogger(__name__)
@@ -80,6 +82,8 @@ def normalize_indian_phone(phone):
 
 
 def _email_is_configured():
+    if settings.EMAIL_BACKEND == 'django.core.mail.backends.console.EmailBackend':
+        return True
     return bool(
         settings.EMAIL_HOST
         and settings.EMAIL_HOST_USER
@@ -88,15 +92,19 @@ def _email_is_configured():
     )
 
 
-def _send_email_verification(request, email, user=None):
+def _send_email_verification(request, email, user=None, next_url=''):
     if not _email_is_configured():
         return False, 'Email verification is not configured. Set up the store SMTP settings before placing orders.'
 
     now = timezone.now()
-    if EmailVerification.objects.filter(
+    recent_verification = EmailVerification.objects.filter(
         email__iexact=email,
         created_at__gte=now - timedelta(minutes=1),
-    ).exists():
+    ).order_by('-created_at').first()
+    if recent_verification:
+        if user and recent_verification.user_id is None:
+            recent_verification.user = user
+            recent_verification.save(update_fields=['user'])
         return True, 'A verification email was sent recently. Check your inbox and spam folder.'
 
     otp = f'{secrets.randbelow(900000) + 100000:06d}'
@@ -109,6 +117,8 @@ def _send_email_verification(request, email, user=None):
     verification_url = request.build_absolute_uri(
         reverse('verify_email', args=[verification.token])
     )
+    if next_url:
+        verification_url += '?next=' + next_url
     try:
         sent = send_mail(
             subject='Verify your email for Avatar Store',
@@ -131,19 +141,35 @@ def _send_email_verification(request, email, user=None):
     return True, 'Verification link and one-time code sent. Check your email.'
 
 
-def _complete_email_verification(request, verification):
+def _complete_email_verification(request, verification, next_url=''):
     verification.verified_at = timezone.now()
     verification.otp_hash = ''
     verification.save(update_fields=['verified_at', 'otp_hash'])
     if verification.user_id:
-        customer = Customer.objects.filter(
-            user_id=verification.user_id,
-            email__iexact=verification.email,
-        ).first()
-        if customer:
+        user = verification.user
+        if not user.is_active:
+            user.is_active = True
+            user.save(update_fields=['is_active'])
+        customer, _ = Customer.objects.get_or_create(
+            user=user,
+            defaults={
+                'name': user.get_full_name() or user.username,
+                'email': verification.email,
+                'email_verified': True,
+            },
+        )
+        if (
+            not customer.email_verified
+            or (customer.email or '').casefold() != verification.email.casefold()
+        ):
+            customer.email = verification.email
             customer.email_verified = True
-            customer.save(update_fields=['email_verified'])
-        messages.success(request, 'Your email is verified. You can now place orders.')
+            customer.save(update_fields=['email', 'email_verified'])
+        messages.success(request, 'Your email is verified. You can now sign in.')
+        if next_url == 'seller':
+            return redirect('seller_login')
+        if url_has_allowed_host_and_scheme(next_url, {request.get_host()}):
+            return redirect(next_url)
         return redirect('account')
 
     request.session['verified_checkout_email'] = verification.email
@@ -164,7 +190,9 @@ def _line_value(line, name, default=None):
 
 def store(request):
     data = cartData(request)
-    products = Product.objects.select_related('category').prefetch_related('variants').all()
+    products = Product.objects.filter(is_active=True).select_related(
+        'category',
+    ).prefetch_related('variants')
     search_query = request.GET.get('q', '').strip()
     category_slug = request.GET.get('category', '').strip()
     variant_filter = request.GET.get('variant', '').strip()
@@ -219,7 +247,9 @@ def store(request):
 def product_detail(request, product_id):
     data = cartData(request)
     product = get_object_or_404(
-        Product.objects.select_related('category').prefetch_related('variants'),
+        Product.objects.filter(is_active=True).select_related(
+            'category',
+        ).prefetch_related('variants'),
         id=product_id,
     )
     visitor_key = _session_visitor_key(request)
@@ -266,7 +296,7 @@ def _checkout_context(request, error=''):
     if request.user.is_authenticated:
         customer = get_or_create_customer_for_user(request.user)
         email = customer.email or request.user.email
-        email_verified = bool(customer.email_verified and email)
+        email_verified = bool(email)
     else:
         email = (
             request.POST.get('email', '').strip()
@@ -293,12 +323,14 @@ def _checkout_context(request, error=''):
 def request_email_verification(request):
     if request.method != 'POST':
         return HttpResponseBadRequest('POST required.')
+    seller_portal = request.POST.get('next') == 'seller'
+    login_destination = 'seller_login' if seller_portal else 'login'
     email = request.POST.get('email', '').strip().lower()
     try:
         validate_email(email)
     except ValidationError:
         messages.error(request, 'Enter a valid email address.')
-        return redirect('checkout' if not request.user.is_authenticated else 'account')
+        return redirect('account' if request.user.is_authenticated else login_destination)
 
     user = None
     if request.user.is_authenticated:
@@ -307,16 +339,19 @@ def request_email_verification(request):
         if email != (user.email or '').strip().lower():
             messages.error(request, 'Verify the email saved in your profile. Update your profile first if it changed.')
             return redirect('account')
+    else:
+        user = User.objects.filter(email__iexact=email).first()
 
-    sent, message = _send_email_verification(request, email, user)
+    next_url = 'seller' if seller_portal else ''
+    sent, message = _send_email_verification(request, email, user, next_url)
     if not sent:
         messages.error(request, message)
-        return redirect('checkout' if not request.user.is_authenticated else 'account')
+        return redirect('account' if request.user.is_authenticated else login_destination)
 
-    if not request.user.is_authenticated:
+    if not request.user.is_authenticated and not seller_portal:
         request.session['pending_checkout_email'] = email
     messages.success(request, message)
-    return redirect('checkout' if not request.user.is_authenticated else 'account')
+    return redirect('account' if request.user.is_authenticated else login_destination)
 
 
 def verify_email(request, token):
@@ -330,9 +365,18 @@ def verify_email(request, token):
         return redirect('checkout' if verification.user_id is None else 'account')
 
     if request.method == 'POST':
-        return _complete_email_verification(request, verification)
-    return render(request, 'store/email_verification_confirm.html', {
+        next_url = request.POST.get('next', '')
+        return _complete_email_verification(request, verification, next_url)
+    next_url = request.GET.get('next', '')
+    template = (
+        'store/seller_email_verification_confirm.html'
+        if next_url == 'seller'
+        else 'store/email_verification_confirm.html'
+    )
+    return render(request, template, {
         'verification': verification,
+        'next_url': next_url,
+        'seller_portal': next_url == 'seller',
     })
 
 
@@ -439,8 +483,7 @@ def _create_order(request, payment_method):
         if customer.email and customer.email.casefold() != email.casefold():
             raise ValueError('Use the email address saved in your profile, or update and verify it first.')
         email_verified = bool(
-            customer.email_verified
-            and customer.email
+            customer.email
             and customer.email.casefold() == email.casefold()
         )
     else:
@@ -821,6 +864,128 @@ def account(request):
 
 
 @login_required(login_url='login')
+def account_settings(request):
+    customer = get_or_create_customer_for_user(request.user)
+    return render(request, 'store/settings.html', {
+        'customer': customer,
+        'cartItems': cartData(request)['cartItems'],
+    })
+
+
+@login_required(login_url='seller_login')
+def seller_dashboard(request):
+    seller_store = SellerStore.objects.filter(owner=request.user).first()
+    store_form = SellerStoreForm(instance=seller_store)
+    product_form = SellerProductForm()
+    editing_product_id = ''
+
+    if request.method == 'POST':
+        action = request.POST.get('action')
+        if action == 'save_store':
+            store_form = SellerStoreForm(request.POST, instance=seller_store)
+            if store_form.is_valid():
+                seller_store = store_form.save(commit=False)
+                seller_store.owner = request.user
+                seller_store.save()
+                messages.success(request, 'Your store details were saved.')
+                return redirect('seller_dashboard')
+        elif action == 'save_product' and seller_store:
+            product_id = request.POST.get('product_id', '').strip()
+            editing_product_id = product_id
+            product = None
+            if product_id:
+                if not product_id.isdigit():
+                    return HttpResponseBadRequest('Invalid product listing.')
+                product = get_object_or_404(
+                    Product,
+                    pk=product_id,
+                    seller_store=seller_store,
+                )
+            product_form = SellerProductForm(
+                request.POST,
+                request.FILES,
+                instance=product,
+            )
+            if product_form.is_valid():
+                product = product_form.save(commit=False)
+                product.seller_store = seller_store
+                product.save()
+                messages.success(request, 'Your product listing was saved.')
+                return redirect('seller_dashboard')
+        elif action == 'edit_product' and seller_store:
+            editing_product_id = request.POST.get('product_id', '').strip()
+            if not editing_product_id.isdigit():
+                return HttpResponseBadRequest('Invalid product listing.')
+            product = get_object_or_404(
+                Product,
+                pk=editing_product_id,
+                seller_store=seller_store,
+            )
+            product_form = SellerProductForm(instance=product)
+        else:
+            messages.error(request, 'Choose a valid seller dashboard action.')
+
+    cart_items = cartData(request)['cartItems']
+    if not seller_store:
+        return render(request, 'store/seller_dashboard.html', {
+            'cartItems': cart_items,
+            'store_form': store_form,
+            'product_form': product_form,
+            'editing_product_id': editing_product_id,
+        })
+
+    products = seller_store.products.select_related('category').order_by('name')
+    seller_lines = list(
+        OrderItem.objects.filter(
+            product__seller_store=seller_store,
+            order__complete=True,
+        ).select_related('order', 'product', 'variant').order_by('-order__date_order')
+    )
+    grouped_orders = {}
+    paid_sales = 0
+    awaiting_payment = 0
+    for line in seller_lines:
+        order = line.order
+        grouped_order = grouped_orders.setdefault(order.pk, {
+            'order': order,
+            'items': [],
+        })
+        grouped_order['items'].append(line)
+        line_total = line.get_total
+        if order.payment_status == 'paid' and order.status not in ('Cancelled', 'Returned'):
+            paid_sales += line_total
+        elif (
+            order.payment_status in ('pending', 'pending_review')
+            and order.status not in ('Cancelled', 'Returned')
+        ):
+            awaiting_payment += line_total
+
+    return render(request, 'store/seller_dashboard.html', {
+        'cartItems': cart_items,
+        'seller_store': seller_store,
+        'store_form': store_form,
+        'product_form': product_form,
+        'editing_product_id': editing_product_id,
+        'products': products,
+        'product_count': products.count(),
+        'active_listing_count': products.filter(is_active=True).count(),
+        'low_stock_count': products.filter(
+            stock__isnull=False,
+            stock__lte=F('low_stock_threshold'),
+        ).count(),
+        'paid_sales': paid_sales,
+        'awaiting_payment': awaiting_payment,
+        'seller_orders': list(grouped_orders.values())[:12],
+    })
+
+
+def seller_portal(request):
+    if request.user.is_authenticated:
+        return redirect('seller_dashboard')
+    return redirect('seller_login')
+
+
+@login_required(login_url='login')
 def order_action(request, order_id):
     if request.method != 'POST':
         return HttpResponseBadRequest('POST required.')
@@ -860,21 +1025,49 @@ def order_action(request, order_id):
     return redirect('account')
 
 
-def login_view(request):
+def login_view(request, seller_portal=False):
     if request.user.is_authenticated:
-        return redirect('account')
+        return redirect('seller_dashboard' if seller_portal else 'account')
 
     next_url = request.POST.get('next') or request.GET.get('next', '')
     if request.method == 'POST':
-        form = AuthenticationForm(request, data=request.POST)
+        login_data = request.POST.copy()
+        identifier = login_data.get('username', '').strip()
+        user = (
+            User.objects.filter(email__iexact=identifier).first()
+            if '@' in identifier
+            else User.objects.filter(username__iexact=identifier).first()
+        )
+        if user and '@' in identifier:
+            login_data['username'] = user.username
+        if (
+            user
+            and not user.is_active
+            and user.check_password(login_data.get('password', ''))
+        ):
+            user.is_active = True
+            user.save(update_fields=['is_active'])
+        form = AuthenticationForm(request, data=login_data)
+        form.fields['username'].label = 'Username or email'
         if form.is_valid():
             login(request, form.get_user())
             if url_has_allowed_host_and_scheme(next_url, {request.get_host()}):
                 return redirect(next_url)
-            return redirect('account')
+            return redirect('seller_dashboard' if seller_portal else 'account')
     else:
         form = AuthenticationForm()
-    return render(request, 'store/login.html', {'form': form, 'next': next_url})
+        form.fields['username'].label = 'Username or email'
+    return render(request, (
+        'store/seller_login.html' if seller_portal else 'store/login.html'
+    ), {
+        'form': form,
+        'next': next_url,
+        'seller_portal': seller_portal,
+    })
+
+
+def seller_login(request):
+    return login_view(request, seller_portal=True)
 
 
 def phone_login_request(request):
@@ -989,9 +1182,14 @@ def logout_view(request):
     return redirect('store')
 
 
-def register_view(request):
+def seller_logout(request):
+    logout(request)
+    return redirect('seller_login')
+
+
+def register_view(request, seller_portal=False):
     if request.user.is_authenticated:
-        return redirect('account')
+        return redirect('seller_dashboard' if seller_portal else 'account')
 
     if request.method == 'POST':
         form = UserCreationForm(request.POST)
@@ -1011,24 +1209,27 @@ def register_view(request):
             except (ValidationError, ValueError) as error:
                 form.add_error(None, str(error))
             else:
-                user = form.save()
+                user = form.save(commit=False)
                 user.first_name = name
                 user.email = email
-                user.save(update_fields=['first_name', 'email'])
+                user.is_active = True
+                user.save()
                 customer = get_or_create_customer_for_user(user)
                 customer.phone = phone_e164
                 customer.phone_e164 = phone_e164
                 customer.save(update_fields=['phone', 'phone_e164'])
                 login(request, user)
-                sent, message = _send_email_verification(request, email.lower(), user)
-                if sent:
-                    messages.success(request, 'Account created. ' + message)
-                else:
-                    messages.error(request, 'Account created, but ' + message)
-                return redirect('account')
+                messages.success(request, 'Your account is ready.')
+                return redirect('seller_dashboard' if seller_portal else 'account')
     else:
         form = UserCreationForm()
-    return render(request, 'store/register.html', {'form': form})
+    return render(request, (
+        'store/seller_register.html' if seller_portal else 'store/register.html'
+    ), {'form': form, 'seller_portal': seller_portal})
+
+
+def seller_register(request):
+    return register_view(request, seller_portal=True)
 
 
 def updateItem(request):

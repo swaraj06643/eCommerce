@@ -1,0 +1,39 @@
+{% extends 'store/seller_portal_base.html' %}
+{% block title %}Create a seller account | Avatar{% endblock title %}
+{% block content %}
+<section class="seller-auth-layout seller-register-layout">
+    <div class="seller-auth-intro">
+        <p class="section-kicker">START YOUR SELLER JOURNEY</p>
+        <h1>Your store.<br><span>Your next chapter.</span></h1>
+        <p>Create one account to list products, keep stock up to date and follow orders from your seller workspace.</p>
+        <ul>
+            <li>One dashboard for your listings and inventory</li>
+            <li>Order summaries for products in your store</li>
+            <li>Email verification protects account access</li>
+        </ul>
+    </div>
+    <div class="seller-auth-card">
+        <p class="section-kicker">SELLER ACCOUNT</p>
+        <h2>Create your account</h2>
+        <p class="seller-auth-subtitle">Create your account with a username, email and password. You can sign in right away.</p>
+        <form method="post" class="seller-auth-form">
+            {% csrf_token %}
+            <p>
+                <label for="seller-first-name">Full name</label>
+                <input id="seller-first-name" name="first_name" type="text" autocomplete="name" required>
+            </p>
+            <p>
+                <label for="seller-email">Email address</label>
+                <input id="seller-email" name="email" type="email" autocomplete="email" required>
+            </p>
+            <p>
+                <label for="seller-phone">Indian phone (optional)</label>
+                <input id="seller-phone" name="phone" type="tel" autocomplete="tel" inputmode="tel" placeholder="10-digit mobile number" pattern="[0-9+ -]{10,16}">
+            </p>
+            {{ form.as_p }}
+            <button type="submit" class="seller-button">Create seller account</button>
+        </form>
+        <p class="seller-auth-footnote">Already registered? <a href="{% url 'seller_login' %}">Sign in to your seller account</a>.</p>
+    </div>
+</section>
+{% endblock content %}

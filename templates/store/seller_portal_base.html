@@ -1,0 +1,44 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Seller Portal | Avatar{% endblock title %}</title>
+    <link rel="icon" type="image/svg+xml" href="{% static 'images/avatar-mark.svg' %}">
+    <link rel="stylesheet" href="{% static 'css/main.css' %}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Glory:wght@500&display=swap" rel="stylesheet">
+</head>
+<body class="shop-body seller-portal-body">
+    <div class="top-strip">AVATAR SELLER PORTAL <span aria-hidden="true">·</span> YOUR BUSINESS, YOUR WORKSPACE</div>
+    <header class="seller-portal-header">
+        <a class="shop-brand" href="{% url 'seller_portal_home' %}">
+            <img width="40" height="40" src="{% static 'images/avatar-mark.svg' %}" alt="">
+            <span>Avatar <em>Seller</em></span>
+        </a>
+        <nav aria-label="Seller portal navigation">
+            <a href="{% url 'store' %}">Shop</a>
+            {% if request.user.is_authenticated %}
+            <a href="{% url 'seller_dashboard' %}">Dashboard</a>
+            <a href="{% url 'seller_logout' %}">Sign out</a>
+            {% else %}
+            <a href="{% url 'seller_login' %}">Seller login</a>
+            <a class="seller-portal-join" href="{% url 'seller_register' %}">Start selling</a>
+            {% endif %}
+        </nav>
+    </header>
+    <main class="seller-portal-main">
+        {% if messages %}
+        <div class="site-messages">
+            {% for message in messages %}
+            <div class="alert alert-{{ message.tags|default:'info' }}" role="status">{{ message }}</div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% block content %}{% endblock content %}
+    </main>
+    <footer class="seller-portal-footer">Avatar Seller Portal <span aria-hidden="true">·</span> Built for your day-to-day selling</footer>
+</body>
+</html>

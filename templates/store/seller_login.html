@@ -1,0 +1,24 @@
+{% extends 'store/seller_portal_base.html' %}
+{% block title %}Seller login | Avatar{% endblock title %}
+{% block content %}
+<section class="seller-auth-layout">
+    <div class="seller-auth-intro">
+        <p class="section-kicker">WELCOME TO YOUR WORKSPACE</p>
+        <h1>Make room for<br><span>what you sell.</span></h1>
+        <p>Sign in to manage your store profile, products, inventory and incoming orders.</p>
+        <a href="{% url 'seller_register' %}">New to selling here? Create your seller account <span aria-hidden="true">→</span></a>
+    </div>
+    <div class="seller-auth-card">
+        <p class="section-kicker">SELLER ACCOUNT</p>
+        <h2>Sign in</h2>
+        <p class="seller-auth-subtitle">Use your Avatar account username or email.</p>
+        <form method="post" class="seller-auth-form">
+            {% csrf_token %}
+            <input type="hidden" name="next" value="{{ next }}">
+            {{ form.as_p }}
+            <button type="submit" class="seller-button">Continue to seller panel</button>
+        </form>
+        <p class="seller-auth-footnote">Your seller portal uses the same secure Avatar account as the shop.</p>
+    </div>
+</section>
+{% endblock content %}

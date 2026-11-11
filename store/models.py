@@ -27,6 +27,21 @@ class Customer(models.Model):
     def __str__(self):
         return self.name or self.email or str(self.id)
 
+
+class SellerStore(models.Model):
+    owner = models.OneToOneField(
+        User,
+        on_delete=models.CASCADE,
+        related_name='seller_store',
+    )
+    name = models.CharField(max_length=120)
+    description = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.name
+
+
 class Product(models.Model):
     name = models.CharField(max_length=200, null=True)
     price = models.FloatField(max_length=200, null=True)
@@ -35,9 +50,17 @@ class Product(models.Model):
     description = models.TextField(blank=True, default='')
     offer_text = models.CharField(max_length=255, blank=True, default='')
     category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, blank=True)
+    seller_store = models.ForeignKey(
+        SellerStore,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='products',
+    )
     stock = models.PositiveIntegerField(null=True, blank=True)
     low_stock_threshold = models.PositiveIntegerField(default=5)
     digital = models.BooleanField(default=False, null=True, blank=True)
+    is_active = models.BooleanField(default=True)
     image = models.ImageField(null=True, blank=True)
 
     def __str__(self):

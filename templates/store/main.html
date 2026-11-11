@@ -100,6 +100,14 @@
               <li class="nav-item">
                   <a class="nav-link" href="{% url 'account' %}">Account</a>
               </li>
+              {% if request.user.is_authenticated %}
+              <li class="nav-item">
+                  <a class="nav-link" href="{% url 'account_settings' %}">Settings</a>
+              </li>
+              {% endif %}
+              <li class="nav-item">
+                  <a class="nav-link" href="{% url 'seller_login' %}">Seller login</a>
+              </li>
               <li class="nav-item">
                   <a class="nav-link" href="{% url 'help' %}">Help</a>
               </li>

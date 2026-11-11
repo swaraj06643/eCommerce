@@ -11,6 +11,7 @@ from .models import (
     Payment,
     Product,
     ProductVariant,
+    SellerStore,
     ShippingAddress,
 )
 from .utils import release_reserved_inventory
@@ -49,12 +50,12 @@ class CategoryAdmin(admin.ModelAdmin):
 
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
-    list_display = ('name', 'category', 'price', 'stock', 'stock_alert', 'digital')
-    list_filter = ('category', StockLevelFilter, 'digital')
+    list_display = ('name', 'seller_store', 'category', 'price', 'stock', 'stock_alert', 'is_active', 'digital')
+    list_filter = ('seller_store', 'category', StockLevelFilter, 'is_active', 'digital')
     search_fields = ('name', 'description', 'variants__sku')
     fields = (
-        'name', 'category', 'price', 'list_price', 'cost_price', 'description',
-        'offer_text', 'stock', 'low_stock_threshold', 'digital', 'image',
+        'name', 'seller_store', 'category', 'price', 'list_price', 'cost_price', 'description',
+        'offer_text', 'stock', 'low_stock_threshold', 'digital', 'is_active', 'image',
     )
     inlines = (ProductVariantInline,)
 
@@ -127,3 +128,4 @@ class PaymentAdmin(admin.ModelAdmin):
 
 admin.site.register(Customer)
 admin.site.register(ShippingAddress)
+admin.site.register(SellerStore)

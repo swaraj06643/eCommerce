@@ -11,22 +11,33 @@ https://docs.djangoproject.com/en/3.2/ref/settings/
 """
 import os
 from pathlib import Path
+from urllib.parse import parse_qsl, unquote, urlsplit
+
+from django.core.exceptions import ImproperlyConfigured
+from dotenv import load_dotenv
 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / '.env')
 
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/3.2/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-$7wi1%wk58dzg#btbc63n^skb!2oz2!$o@)jktb+4=npli91^5'
-
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.environ.get('DEBUG', 'true').lower() == 'true'
+SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', '')
+if not SECRET_KEY:
+    if not DEBUG:
+        raise ImproperlyConfigured('Set DJANGO_SECRET_KEY when DEBUG is disabled.')
+    SECRET_KEY = 'django-insecure-local-development-only-not-for-production'
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
+    if host.strip()
+]
 
 
 # Application definition
@@ -79,12 +90,39 @@ WSGI_APPLICATION = 'eCommerce.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/3.2/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+def database_config():
+    database_url = os.environ.get('DATABASE_URL', '').strip()
+    if not database_url:
+        return {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+
+    parsed = urlsplit(database_url)
+    if parsed.scheme not in ('postgres', 'postgresql') or not parsed.hostname:
+        raise ImproperlyConfigured(
+            'DATABASE_URL must be a valid PostgreSQL connection URL.'
+        )
+
+    database_name = unquote(parsed.path.lstrip('/'))
+    if not database_name or not parsed.username:
+        raise ImproperlyConfigured(
+            'DATABASE_URL must include a database name and username.'
+        )
+
+    return {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': database_name,
+        'USER': unquote(parsed.username),
+        'PASSWORD': unquote(parsed.password or ''),
+        'HOST': parsed.hostname,
+        'PORT': parsed.port or 5432,
+        'OPTIONS': dict(parse_qsl(parsed.query, keep_blank_values=True)),
+        'CONN_MAX_AGE': int(os.environ.get('DB_CONN_MAX_AGE', '60')),
     }
-}
+
+
+DATABASES = {'default': database_config()}
 
 
 # Password validation
@@ -113,13 +151,18 @@ PAYU_SALT = os.environ.get('PAYU_SALT', '')
 PAYU_PAYMENT_URL = os.environ.get('PAYU_PAYMENT_URL', 'https://test.payu.in/_payment')
 AVATAR_UPI_ID = os.environ.get('AVATAR_UPI_ID', 'swarajrath6@oksbi')
 
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = os.environ.get('EMAIL_HOST', '')
 EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '587'))
 EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'true').lower() == 'true'
 EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'avatarshop@gmail.com')
+EMAIL_BACKEND = os.environ.get(
+    'EMAIL_BACKEND',
+    'django.core.mail.backends.console.EmailBackend'
+    if DEBUG and not EMAIL_HOST
+    else 'django.core.mail.backends.smtp.EmailBackend',
+)
 MSG91_AUTH_KEY = os.environ.get('MSG91_AUTH_KEY', '')
 MSG91_OTP_TEMPLATE_ID = os.environ.get('MSG91_OTP_TEMPLATE_ID', '')
 MSG91_OTP_SEND_URL = os.environ.get(

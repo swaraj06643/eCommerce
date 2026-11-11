@@ -9,8 +9,12 @@ Avatar is an eCommerce store created by Subhasiosh Rath in Odisha, with a welcom
 - Order status and carrier tracking details maintained by store staff; customer cancellation and return requests.
 - Optional inventory counts, low-stock admin filters, and price/cost snapshots on order lines.
 - Staff-only revenue, estimated-profit, visitor-conversion, and low-stock dashboard.
+- Dealer seller panel for store profiles, product listings, inventory, and order summaries.
+- Seller vault summary based on recorded paid and pending orders; payouts are not processed by the app.
+- Dedicated seller portal with seller login and registration at `/seller-portal/`.
 - Product, category, variant, customer, order, and payment administration.
 - Product detail pages with descriptions, current prices, and admin-managed offers.
+- Signed-in users can open seller settings from Account → **Be a seller**, publish or hide listings, update stock, and review orders containing their products.
 - Delivery PIN entry and address collection at checkout. Postal checks validate the PIN, delivery status, city and state against India Post directory data; they do not prove a street address or phone ownership.
 - Help and support page with contact details for avatarshop@gmail.com.
 
@@ -65,6 +69,20 @@ python manage.py migrate
 python manage.py runserver
 ```
 
+## Seller portal, authentication, and PostgreSQL
+
+Open **Account → Seller login** or **Be a seller**, or visit `/seller-portal/`. The seller portal has its own login, signup, and dashboard layout using the store's theme. Seller and shopper accounts are shared. Signup activates the account and signs the user in immediately; username/email and password are enough for login. Guest checkout can still request email confirmation for the guest-provided address.
+
+The project uses SQLite by default for local development. To use Neon/PostgreSQL, set `DATABASE_URL` in the process environment or in an untracked local `.env` file based on `.env.example`, install requirements, and run migrations:
+
+```powershell
+$env:DATABASE_URL = "postgresql://USER:PASSWORD@HOST/DB_NAME?sslmode=require"
+python manage.py migrate
+python manage.py runserver
+```
+
+Keep the database URL, `DJANGO_SECRET_KEY`, and mail credentials out of source control. Rotate any database credential that has been pasted into a chat, ticket, or public log before using it. The application does not automatically copy existing SQLite records into Neon; migrate the schema first, then import data separately if needed.
+
 Use Django admin to edit product descriptions, offers, categories, variants, stock counts, and cost prices. PayU requires merchant credentials to be set in the local environment before enabling online checkout:
 
 ```powershell
@@ -77,7 +95,7 @@ python manage.py runserver
 
 Use the live PayU endpoint only after configuring and testing a merchant account. Never commit merchant secrets. Manual UPI references and COD payments remain pending until staff verifies/records payment in admin. PayU refunds and courier updates are not automatically sent to external providers; process refunds in PayU and maintain carrier/status information in the order admin. Products with a `NULL` stock count are not inventory-tracked until a stock count is entered. Profit excludes order lines without a recorded product cost.
 
-Email verification sends a one-time link and a 6-digit code; password resets use Django's one-time reset link. Both require SMTP credentials. For Gmail, use an account with 2-Step Verification and a dedicated App Password (not the regular account password). Set these in the local environment before starting Django:
+Email verification sends a one-time link and a 6-digit code; password resets use Django's one-time reset link. For real delivery outside local debug mode, configure SMTP. For Gmail, use an account with 2-Step Verification and a dedicated App Password (not the regular account password). Set these in the local environment before starting Django:
 
 ```powershell
 $env:EMAIL_HOST = "smtp.gmail.com"

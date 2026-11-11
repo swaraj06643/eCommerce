@@ -18,6 +18,7 @@
     <div class="detail-information">
         <p class="section-kicker">AVATAR EVERYDAY EDIT</p>
         <h1>{{ product.name }}</h1>
+        {% if product.seller_store %}<p class="seller-product-byline">Sold by {{ product.seller_store.name }}</p>{% endif %}
         <p class="detail-description">{{ product.description|default:"Product details will be updated soon. Contact us if you need more information." }}</p>
 
         <div class="detail-price-block">
