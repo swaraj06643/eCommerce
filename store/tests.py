@@ -141,6 +141,8 @@ class StorefrontTests(TestCase):
     def test_horizontal_filters_only_appear_after_search(self):
         response = self.client.get(reverse('store'))
         self.assertNotContains(response, 'catalog-filters')
+        self.assertContains(response, 'Shop product categories')
+        self.assertContains(response, 'Electronics')
 
         response = self.client.get(reverse('store'), {'q': 'Headphones'})
         self.assertEqual(response.status_code, 200)
@@ -848,6 +850,7 @@ class StorefrontTests(TestCase):
 
     def test_seller_can_create_and_edit_only_owned_listings(self):
         seller = User.objects.create_user(username='seller', password='seller-password')
+        category = Category.objects.create(name='Accessories', slug='accessories')
         seller_store = SellerStore.objects.create(
             owner=seller,
             name='Northside Goods',
@@ -857,8 +860,11 @@ class StorefrontTests(TestCase):
         response = self.client.post(reverse('seller_dashboard'), {
             'action': 'save_product',
             'name': 'Canvas Day Bag',
+            'category': category.pk,
             'price': '420',
+            'list_price': '480',
             'description': 'A roomy everyday bag for carrying books, a water bottle and daily essentials.',
+            'offer_text': 'Introductory seller price this week.',
             'stock': '8',
             'low_stock_threshold': '2',
             'is_active': 'on',
@@ -868,6 +874,46 @@ class StorefrontTests(TestCase):
         product = Product.objects.get(name='Canvas Day Bag')
         self.assertEqual(product.seller_store, seller_store)
         self.assertTrue(product.is_active)
+
+        storefront = self.client.get(reverse('store'))
+        self.assertContains(storefront, 'Canvas Day Bag')
+        self.assertContains(storefront, 'Accessories')
+        self.assertContains(storefront, 'A roomy everyday bag for carrying books')
+        self.assertContains(storefront, seller_store.name)
+        details = self.client.get(reverse('product_detail', args=[product.pk]))
+        self.assertContains(details, '420.00')
+        self.assertContains(details, '480.00')
+        self.assertContains(details, 'Introductory seller price this week.')
+        self.assertContains(details, 'Accessories')
+
+        updated_category = Category.objects.create(name='Travel Gear', slug='travel-gear')
+        response = self.client.post(reverse('seller_dashboard'), {
+            'action': 'save_product',
+            'product_id': product.pk,
+            'name': 'Canvas Weekender',
+            'category': updated_category.pk,
+            'price': '510',
+            'list_price': '',
+            'description': 'An updated roomy canvas weekender for packing clothes and essentials for short trips.',
+            'offer_text': 'Updated product information from the seller.',
+            'stock': '6',
+            'low_stock_threshold': '2',
+            'is_active': 'on',
+        })
+        self.assertRedirects(response, reverse('seller_dashboard'))
+        product.refresh_from_db()
+        self.assertEqual(product.name, 'Canvas Weekender')
+        self.assertEqual(product.price, 510)
+        self.assertEqual(product.category, updated_category)
+        self.assertEqual(product.description, 'An updated roomy canvas weekender for packing clothes and essentials for short trips.')
+        self.assertEqual(product.offer_text, 'Updated product information from the seller.')
+
+        storefront = self.client.get(reverse('store'), {'category': 'travel-gear'})
+        self.assertContains(storefront, 'Canvas Weekender')
+        self.assertContains(storefront, '510.00')
+        self.assertContains(storefront, 'An updated roomy canvas weekender')
+        self.assertContains(storefront, 'Travel Gear')
+        self.assertNotContains(storefront, 'Canvas Day Bag')
 
         other_store = SellerStore.objects.create(
             owner=User.objects.create_user(username='other-seller', password='seller-password'),

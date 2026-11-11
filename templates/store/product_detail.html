@@ -3,7 +3,11 @@
 {% block title %}{{ product.name }} | Avatar Store{% endblock title %}
 {% block content %}
 <div class="detail-breadcrumb">
-    <a href="{% url 'store' %}">Home</a><span aria-hidden="true">/</span><span>{{ product.name }}</span>
+    <a href="{% url 'store' %}">Home</a>
+    {% if product.category %}
+    <span aria-hidden="true">/</span><a href="{% url 'store' %}?category={{ product.category.slug }}">{{ product.category.name }}</a>
+    {% endif %}
+    <span aria-hidden="true">/</span><span>{{ product.name }}</span>
 </div>
 
 <section class="product-detail">
@@ -18,6 +22,7 @@
     <div class="detail-information">
         <p class="section-kicker">AVATAR EVERYDAY EDIT</p>
         <h1>{{ product.name }}</h1>
+        {% if product.category %}<p class="detail-product-category">{{ product.category.name }}</p>{% endif %}
         {% if product.seller_store %}<p class="seller-product-byline">Sold by {{ product.seller_store.name }}</p>{% endif %}
         <p class="detail-description">{{ product.description|default:"Product details will be updated soon. Contact us if you need more information." }}</p>
 

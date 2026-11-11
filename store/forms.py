@@ -23,7 +23,7 @@ class SellerProductForm(forms.ModelForm):
     class Meta:
         model = Product
         fields = (
-            'name', 'category', 'price', 'list_price', 'description',
+            'name', 'category', 'price', 'list_price', 'description', 'offer_text',
             'stock', 'low_stock_threshold', 'digital', 'is_active', 'image',
         )
         widgets = {
@@ -36,6 +36,7 @@ class SellerProductForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields['category'].queryset = Category.objects.filter(active=True)
+        self.fields['category'].required = True
         self.fields['price'].validators.append(MinValueValidator(0.01))
         self.fields['list_price'].validators.append(MinValueValidator(0.01))
         if not self.is_bound:

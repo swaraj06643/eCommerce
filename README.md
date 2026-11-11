@@ -9,12 +9,12 @@ Avatar is an eCommerce store created by Subhasiosh Rath in Odisha, with a welcom
 - Order status and carrier tracking details maintained by store staff; customer cancellation and return requests.
 - Optional inventory counts, low-stock admin filters, and price/cost snapshots on order lines.
 - Staff-only revenue, estimated-profit, visitor-conversion, and low-stock dashboard.
-- Dealer seller panel for store profiles, product listings, inventory, and order summaries.
+- Dealer seller panel for store profiles, categorized product listings, inventory, and order summaries. Active seller listings and their current prices, descriptions, offers, and categories appear in the public shop.
 - Seller vault summary based on recorded paid and pending orders; payouts are not processed by the app.
 - Dedicated seller portal with seller login and registration at `/seller-portal/`.
 - Product, category, variant, customer, order, and payment administration.
 - Product detail pages with descriptions, current prices, and admin-managed offers.
-- Signed-in users can open seller settings from Account → **Be a seller**, publish or hide listings, update stock, and review orders containing their products.
+- Signed-in users can open seller settings from Account → **Be a seller**, publish or hide listings, update stock, and review orders containing their products. Seller listings require an active product category and appear in the storefront's category navigation.
 - Delivery PIN entry and address collection at checkout. Postal checks validate the PIN, delivery status, city and state against India Post directory data; they do not prove a street address or phone ownership.
 - Help and support page with contact details for avatarshop@gmail.com.
 

@@ -29,6 +29,9 @@
                 {% if search_term %}
                 <p class="section-kicker">SEARCH RESULTS FOR “{{ search_term }}”</p>
                 <h2>{{ products|length }} result{{ products|length|pluralize }}</h2>
+                {% elif selected_category_name %}
+                <p class="section-kicker">SHOP BY CATEGORY</p>
+                <h2>{{ selected_category_name }}</h2>
                 {% else %}
                 <p class="section-kicker">A LITTLE BIT OF EVERYTHING</p>
                 <h2>Popular picks</h2>
@@ -36,6 +39,18 @@
             </div>
             <span class="collection-note">Made for your everyday</span>
         </div>
+        <nav class="category-browser" aria-label="Shop product categories">
+            <a class="category-chip {% if not selected_category %}is-selected{% endif %}"
+               href="{% if search_term %}{% url 'store' %}?q={{ search_term|urlencode }}{% else %}{% url 'store' %}{% endif %}">
+                All products
+            </a>
+            {% for category in categories %}
+            <a class="category-chip {% if selected_category == category.slug %}is-selected{% endif %}"
+               href="{% url 'store' %}?category={{ category.slug }}{% if search_term %}&amp;q={{ search_term|urlencode }}{% endif %}">
+                {{ category.name }}
+            </a>
+            {% endfor %}
+        </nav>
         {% if search_term %}
         <form class="catalog-filters" method="get" action="{% url 'store' %}" aria-label="Filter search results">
             <input type="hidden" name="q" value="{{ search_term }}">
@@ -75,13 +90,20 @@
                     {% if product.category %}<p class="product-category">{{ product.category.name }}</p>{% endif %}
                     <h3><a class="product-title-link" href="{% url 'product_detail' product.id %}">{{ product.name }}</a></h3>
                     <div class="product-bottom">
-                        <strong class="product-price">&#8377;{{ product.price|floatformat:2 }}</strong>
+                        <div class="product-price-group">
+                            <strong class="product-price">&#8377;{{ product.price|floatformat:2 }}</strong>
+                            {% if product.list_price and product.list_price > product.price %}
+                            <del class="product-list-price">&#8377;{{ product.list_price|floatformat:2 }}</del>
+                            {% endif %}
+                        </div>
                         {% if product.has_variants %}
                         <a class="add-to-bag choose-options" href="{% url 'product_detail' product.id %}" aria-label="Choose options for {{ product.name }}">Choose</a>
                         {% else %}
                         <button data-product="{{ product.id }}" data-action="add" class="add-to-bag update-cart" aria-label="Add {{ product.name }} to cart" {% if product.stock == 0 %}disabled{% endif %}>+</button>
                         {% endif %}
                     </div>
+                    <p class="product-description">{{ product.description }}</p>
+                    {% if product.seller_store %}<p class="product-seller">Sold by {{ product.seller_store.name }}</p>{% endif %}
                 </div>
             </article>
         </div>

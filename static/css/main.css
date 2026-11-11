@@ -475,6 +475,35 @@ body{
 	font-size: 13px;
 }
 
+.category-browser{
+	display: flex;
+	gap: 9px;
+	margin: -3px 0 20px;
+	overflow-x: auto;
+	padding: 2px 1px 8px;
+}
+
+.category-chip{
+	background: #fff;
+	border: 1px solid #e8dfda;
+	border-radius: 999px;
+	color: #5d514d;
+	flex: 0 0 auto;
+	font-size: 13px;
+	font-weight: 700;
+	padding: 8px 15px;
+	text-decoration: none;
+	transition: background .2s ease, color .2s ease, border-color .2s ease;
+}
+
+.category-chip:hover,
+.category-chip.is-selected{
+	background: #29211f;
+	border-color: #29211f;
+	color: #fff;
+	text-decoration: none;
+}
+
 .product-grid{
 	margin-left: -10px;
 	margin-right: -10px;
@@ -550,9 +579,39 @@ body{
 	justify-content: space-between;
 }
 
+.product-price-group{
+	align-items: baseline;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 7px;
+}
+
 .product-price{
 	color: #29211f;
 	font-size: 17px;
+}
+
+.product-list-price{
+	color: #93857e;
+	font-size: 12px;
+}
+
+.product-description{
+	color: #71635e;
+	display: -webkit-box;
+	font-size: 12px;
+	line-height: 1.4;
+	margin: 9px 0 0;
+	min-height: 34px;
+	overflow: hidden;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+}
+
+.product-seller{
+	color: #93857e;
+	font-size: 11px;
+	margin: 7px 0 0;
 }
 
 .add-to-bag{
@@ -588,6 +647,13 @@ body{
 	color: #81736d;
 	font-size: 11px;
 	margin: 0 0 4px;
+}
+
+.detail-product-category{
+	color: #c85e51;
+	font-size: 13px;
+	font-weight: 700;
+	margin: -8px 0 12px;
 }
 
 .add-to-bag:hover{

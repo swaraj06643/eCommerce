@@ -236,6 +236,10 @@ def store(request):
         'search_term': search_query,
         'categories': Category.objects.filter(active=True),
         'selected_category': category_slug,
+        'selected_category_name': Category.objects.filter(
+            slug=category_slug,
+            active=True,
+        ).values_list('name', flat=True).first(),
         'variant_filter': variant_filter,
         'min_price': minimum,
         'max_price': maximum,
