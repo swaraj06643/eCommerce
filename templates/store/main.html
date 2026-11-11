@@ -5,6 +5,11 @@
            <title>{% block title %}Avatar Store | Find your next favourite thing{% endblock title %}</title>
 
             <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1" />
+            <meta name="theme-color" content="#e85f54">
+            <meta name="apple-mobile-web-app-capable" content="yes">
+            <meta name="apple-mobile-web-app-status-bar-style" content="default">
+            <link rel="manifest" href="{% static 'manifest.webmanifest' %}">
+            <link rel="apple-touch-icon" href="{% static 'images/icon-192.png' %}">
             <link rel="icon" type="image/svg+xml" href="{% static 'images/avatar-mark.svg' %}">
             <link rel="stylesheet" type="text/css" href="{% static 'css/main.css' %}">
             <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css" integrity="sha384-Gn5384xqQ1aoWXA+058RXPxPg6fy4IWvTNh0E263XmFcJlSAwiGgFAW/dAiS6JXm" crossorigin="anonymous">
@@ -124,6 +129,7 @@
                   {% else %}
                       <a class="account-link" href="{% url 'login' %}">Login</a>
                   {% endif %}
+                  <button id="install-app-button" class="install-app-button" type="button">Install app</button>
                   <a class="cart-link" href="{% url 'cart' %}" aria-label="Shopping cart">
                       <img  id="cart-icon" src="{% static 'images/cart.png' %}">
                       <span>Bag</span>
@@ -160,6 +166,7 @@
 
       <script type="text/javascript" src="{% static 'js/cart.js' %}"></script>
       <script type="text/javascript" src="{% static 'js/splash.js' %}"></script>
+      <script type="text/javascript" src="{% static 'js/pwa.js' %}"></script>
       {% block extra_scripts %}{% endblock %}
      </body>
 </html>

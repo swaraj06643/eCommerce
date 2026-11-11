@@ -22,6 +22,7 @@ from .models import (
     OrderItem,
     Payment,
     Product,
+    ProductCoupon,
     ProductVariant,
     SellerStore,
     ShippingAddress,
@@ -109,6 +110,121 @@ class StorefrontTests(TestCase):
         self.assertContains(response, '10% off')
         self.assertContains(response, 'delivery-check')
         self.assertContains(response, reverse('checkout'))
+
+    def test_homepage_groups_products_by_ordered_category(self):
+        fashion = Category.objects.create(name='Fashion First', slug='fashion-first', sort_order=1)
+        electronics = Category.objects.create(name='Electronics Next', slug='electronics-next', sort_order=2)
+        self.product.category = electronics
+        self.product.save(update_fields=['category'])
+        Product.objects.create(
+            name='Canvas Shirt',
+            price=50,
+            category=fashion,
+            description='A categorized fashion listing.',
+        )
+
+        response = self.client.get(reverse('store'))
+
+        self.assertEqual(response.status_code, 200)
+        sections = response.context['category_sections']
+        self.assertEqual([section['name'] for section in sections[:2]], [
+            'Fashion First', 'Electronics Next',
+        ])
+        self.assertContains(response, 'category-shelf')
+        self.assertContains(response, 'Canvas Shirt')
+        self.assertContains(response, 'Everyday Headphones')
+
+    def test_coupon_discount_is_applied_and_saved_on_checkout(self):
+        seller = User.objects.create_user(username='coupon-seller', password='Password!123')
+        seller_store = SellerStore.objects.create(
+            owner=seller,
+            name='Coupon Store',
+            description='Everyday products with seller discounts.',
+        )
+        self.product.seller_store = seller_store
+        self.product.save(update_fields=['seller_store'])
+        coupon = ProductCoupon.objects.create(
+            seller_store=seller_store,
+            product=self.product,
+            code='SAVE10',
+            discount_percent='10.00',
+        )
+        self.client.cookies['cart'] = json.dumps({str(self.product.id): {'quantity': 1}})
+
+        response = self.client.post(reverse('checkout'), {
+            'action': 'apply_coupon',
+            'coupon_code': coupon.code,
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Coupon savings:')
+        self.assertContains(response, '161.10')
+
+        response = self.client.post(reverse('checkout'), {
+            'payment_method': 'cod',
+            'name': 'Coupon Buyer',
+            'email': 'buyer@example.com',
+            'phone': '9876543210',
+            'address': '12 Market Road',
+            'city': 'Bhubaneswar',
+            'state': 'Odisha',
+            'zipcode': '751001',
+        })
+
+        self.assertEqual(response.status_code, 302, response.content.decode())
+        order = Order.objects.get(order_number__startswith='AV-')
+        line = order.orderitem_set.get()
+        payment = Payment.objects.get(order=order)
+        self.assertEqual(order.coupon_code, 'SAVE10')
+        self.assertEqual(order.coupon_discount, 17.9)
+        self.assertEqual(line.unit_price, 161.1)
+        self.assertEqual(line.coupon_code, 'SAVE10')
+        self.assertEqual(payment.amount, 161.1)
+
+    def test_seller_can_add_at_most_three_coupons_per_product(self):
+        seller = User.objects.create_user(username='coupon-owner', password='Password!123')
+        category = Category.objects.create(name='Coupon category', slug='coupon-category')
+        seller_store = SellerStore.objects.create(
+            owner=seller,
+            name='Coupon Store',
+            description='Everyday products with seller discounts.',
+        )
+        product = Product.objects.create(
+            seller_store=seller_store,
+            category=category,
+            name='Coupon Product',
+            price=100,
+        )
+        self.client.force_login(seller)
+        for code in ('SAVE10', 'SAVE20', 'SAVE30'):
+            response = self.client.post(reverse('seller_dashboard'), {
+                'action': 'save_coupon',
+                'product_id': product.pk,
+                'code': code,
+                'discount_percent': '10',
+            })
+            self.assertEqual(response.status_code, 302)
+
+        response = self.client.post(reverse('seller_dashboard'), {
+            'action': 'save_coupon',
+            'product_id': product.pk,
+            'code': 'SAVE40',
+            'discount_percent': '10',
+        }, follow=True)
+
+        self.assertEqual(ProductCoupon.objects.filter(product=product).count(), 3)
+        self.assertContains(response, 'up to three coupon codes')
+        detail = self.client.get(reverse('product_detail', args=[product.pk]))
+        self.assertContains(detail, 'SAVE10')
+        self.assertContains(detail, 'SAVE20')
+        self.assertContains(detail, 'SAVE30')
+
+    def test_pwa_service_worker_is_available_at_root_scope(self):
+        response = self.client.get(reverse('service_worker'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Service-Worker-Allowed'], '/')
+        self.assertContains(response, 'avatar-store-v1')
+        self.assertContains(response, "request.mode === 'navigate'")
 
     def test_unknown_product_returns_not_found(self):
         response = self.client.get(reverse('product_detail', args=[99999]))

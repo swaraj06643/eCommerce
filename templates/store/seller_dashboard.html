@@ -98,6 +98,22 @@
                 <button type="submit" class="seller-secondary-button">Edit</button>
             </form>
         </article>
+        <div class="seller-coupon-manager">
+            <strong>Coupons</strong> for {{ product.name }}</strong>
+            {% for coupon in product.coupons.all %}
+            <div class="seller-coupon-row"><span><code>{{ coupon.code }}</code> · {{ coupon.discount_percent|floatformat:0 }}% off</span>
+                <form method="post">{% csrf_token %}<input type="hidden" name="action" value="delete_coupon"><input type="hidden" name="coupon_id" value="{{ coupon.id }}"><button type="submit" class="seller-cancel">Remove</button></form>
+            </div>
+            {% empty %}<small>No seller coupons yet.</small>{% endfor %}
+            {% if product.coupons.count < 3 %}
+            <form method="post" class="seller-coupon-form">
+                {% csrf_token %}<input type="hidden" name="action" value="save_coupon"><input type="hidden" name="product_id" value="{{ product.id }}">
+                <label>Coupon code<input name="code" maxlength="24" pattern="[A-Za-z0-9][A-Za-z0-9_-]{2,23}" placeholder="STYLE10" required></label>
+                <label>Extra discount %<input name="discount_percent" type="number" min="0.01" max="90" step="0.01" placeholder="10" required></label>
+                <button type="submit" class="seller-secondary-button">Add coupon</button>
+            </form>
+            {% else %}<small>Maximum of three coupon codes per product reached.</small>{% endif %}
+        </div>
         {% empty %}
         <p class="seller-empty">No listings yet. Add your first product using the form above.</p>
         {% endfor %}

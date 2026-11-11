@@ -4,7 +4,7 @@ from django.urls import reverse_lazy
 from . import views
 
 urlpatterns = [
-
+        path('service-worker.js', views.service_worker, name='service_worker'),
         path('', views.store, name="store"),
         path('products/<int:product_id>/', views.product_detail, name="product_detail"),
         path('help/', views.help_center, name="help"),

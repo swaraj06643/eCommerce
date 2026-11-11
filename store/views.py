@@ -22,7 +22,7 @@ from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
 from django.db import transaction
 from django.db.models import F, Q, Sum
-from django.http import HttpResponseBadRequest, JsonResponse
+from django.http import HttpResponse, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse, reverse_lazy
 from django.utils import timezone
@@ -38,6 +38,7 @@ from .models import (
     Payment,
     PhoneOTPRequest,
     Product,
+    ProductCoupon,
     ProductVariant,
     ProductVisit,
     SellerStore,
@@ -46,7 +47,7 @@ from .models import (
 from .utils import cartData, release_reserved_inventory
 from .postal import PostalLookupError, validate_delivery_location
 from .sms import SMSProviderError, send_phone_otp, verify_phone_otp
-from .forms import SellerProductForm, SellerStoreForm
+from .forms import ProductCouponForm, SellerProductForm, SellerStoreForm
 
 
 logger = logging.getLogger(__name__)
@@ -190,9 +191,11 @@ def _line_value(line, name, default=None):
 
 def store(request):
     data = cartData(request)
-    products = Product.objects.filter(is_active=True).select_related(
-        'category',
-    ).prefetch_related('variants')
+    products = Product.objects.filter(is_active=True).filter(
+        Q(category__active=True) | Q(category__isnull=True)
+    ).select_related(
+        'category', 'seller_store',
+    ).prefetch_related('variants', 'coupons')
     search_query = request.GET.get('q', '').strip()
     category_slug = request.GET.get('category', '').strip()
     variant_filter = request.GET.get('variant', '').strip()
@@ -230,8 +233,38 @@ def store(request):
     else:
         products = products.order_by('name')
 
+    products = products.distinct()
+    category_sections = []
+    show_category_sections = not search_query and not category_slug
+    if show_category_sections:
+        catalog_products = list(products)
+        products_by_category = {}
+        for product in catalog_products:
+            if product.category_id:
+                products_by_category.setdefault(product.category_id, []).append(product)
+        category_sections = [
+            {
+                'category': category,
+                'name': category.name,
+                'slug': category.slug,
+                'products': products_by_category.get(category.pk, [])[:4],
+            }
+            for category in Category.objects.filter(active=True)
+            if products_by_category.get(category.pk)
+        ]
+        uncategorized = [product for product in catalog_products if not product.category_id]
+        if uncategorized:
+            category_sections.append({
+                'category': None,
+                'name': 'More finds',
+                'slug': 'more-finds',
+                'products': uncategorized[:4],
+            })
+
     context = {
-        'products': products.distinct(),
+        'products': products,
+        'category_sections': category_sections,
+        'show_category_sections': show_category_sections,
         'cartItems': data['cartItems'],
         'search_term': search_query,
         'categories': Category.objects.filter(active=True),
@@ -251,8 +284,10 @@ def store(request):
 def product_detail(request, product_id):
     data = cartData(request)
     product = get_object_or_404(
-        Product.objects.filter(is_active=True).select_related(
-            'category',
+        Product.objects.filter(is_active=True).filter(
+            Q(category__active=True) | Q(category__isnull=True)
+        ).select_related(
+            'category', 'seller_store',
         ).prefetch_related('variants'),
         id=product_id,
     )
@@ -268,8 +303,19 @@ def product_detail(request, product_id):
         'cartItems': data['cartItems'],
         'has_offer': has_offer,
         'discount_percent': discount_percent,
+        'coupons': product.coupons.filter(active=True).order_by('code'),
         'visitor_key': visitor_key,
     })
+
+
+def service_worker(request):
+    response = HttpResponse(
+        (settings.BASE_DIR / 'static' / 'js' / 'service-worker.js').read_text(encoding='utf-8'),
+        content_type='application/javascript',
+    )
+    response['Cache-Control'] = 'no-cache'
+    response['Service-Worker-Allowed'] = '/'
+    return response
 
 
 def help_center(request):
@@ -295,8 +341,43 @@ STATES = [
     'Lakshadweep', 'Puducherry',
 ]
 
+def _coupon_for_cart(code, lines):
+    code = (code or '').strip().upper()
+    if not code:
+        return None, 0.0
+    coupon = ProductCoupon.objects.select_related('product', 'seller_store').filter(
+        code=code,
+        active=True,
+        product__is_active=True,
+    ).first()
+    if not coupon or coupon.product.seller_store_id != coupon.seller_store_id:
+        return None, 0.0
+    eligible_lines = [
+        line for line in lines
+        if getattr(_line_value(line, 'product'), 'id', None) == coupon.product_id
+    ]
+    if not eligible_lines:
+        return None, 0.0
+    discount = Decimal('0.00')
+    percent = Decimal(coupon.discount_percent)
+    for line in eligible_lines:
+        price = Decimal(str(_line_value(line, 'unit_price', None) or _line_value(line, 'product').price))
+        quantity = int(_line_value(line, 'quantity', 0))
+        discount += (price * quantity * percent / Decimal('100')).quantize(Decimal('0.01'))
+    return coupon, float(discount)
+
+
 def _checkout_context(request, error=''):
     data = cartData(request)
+    coupon_code = request.session.get('checkout_coupon_code', '')
+    coupon, coupon_discount = _coupon_for_cart(coupon_code, data['items'])
+    coupon_error = ''
+    if coupon_code and not coupon:
+        coupon_error = 'That coupon is unavailable for the products in your bag.'
+    available_coupons = ProductCoupon.objects.filter(
+        active=True,
+        product_id__in=[_line_value(item, 'product').id for item in data['items']],
+    ).select_related('product').order_by('product__name', 'code')
     if request.user.is_authenticated:
         customer = get_or_create_customer_for_user(request.user)
         email = customer.email or request.user.email
@@ -319,7 +400,19 @@ def _checkout_context(request, error=''):
         'payu_enabled': bool(settings.PAYU_KEY and settings.PAYU_SALT),
         'upi_id': settings.AVATAR_UPI_ID,
         'checkout_email': email,
+        'checkout_name': request.POST.get('name', ''),
+        'checkout_phone': request.POST.get('phone', ''),
+        'checkout_address': request.POST.get('address', ''),
+        'checkout_city': request.POST.get('city', ''),
+        'checkout_state': request.POST.get('state', ''),
+        'checkout_zipcode': request.POST.get('zipcode', ''),
+        'selected_payment_method': request.POST.get('payment_method', ''),
         'email_verified': email_verified,
+        'coupon_code': coupon.code if coupon else coupon_code,
+        'coupon_discount': coupon_discount,
+        'checkout_total': max(0, data['order']['get_cart_total'] - coupon_discount),
+        'available_coupons': available_coupons,
+        'coupon_error': coupon_error,
         'error': error,
     }
 
@@ -469,6 +562,10 @@ def _create_order(request, payment_method):
     lines = data['items']
     if not lines:
         raise ValueError('Your bag is empty.')
+    coupon_code = request.session.get('checkout_coupon_code', '').strip().upper()
+    coupon, _ = _coupon_for_cart(coupon_code, lines)
+    if coupon_code and not coupon:
+        raise ValueError('That coupon is unavailable for the products in your bag.')
     if payment_method not in ('cod', 'upi_manual', 'payu'):
         raise ValueError('Choose a valid payment method.')
     if payment_method == 'payu' and not (settings.PAYU_KEY and settings.PAYU_SALT):
@@ -540,6 +637,13 @@ def _create_order(request, payment_method):
             raise ValueError(str(error))
 
     with transaction.atomic():
+        if coupon:
+            coupon = ProductCoupon.objects.select_for_update().filter(
+                pk=coupon.pk,
+                active=True,
+            ).first()
+            if not coupon:
+                raise ValueError('That coupon is no longer available. Remove it and try again.')
         if customer is None:
             customer = Customer.objects.create(email=email, name=name)
         if not customer.email:
@@ -553,6 +657,7 @@ def _create_order(request, payment_method):
             payment_method=payment_method,
             payment_status='pending',
             visitor_key=request.session.session_key or '',
+            coupon_code=coupon.code if coupon else '',
         )
         order.order_number = f'AV-{timezone.now():%Y%m%d}-{order.id:06d}'
         order.save(update_fields=['order_number'])
@@ -562,6 +667,10 @@ def _create_order(request, payment_method):
             cart_product = _line_value(line, 'product')
             product_id = cart_product.id
             product = Product.objects.select_for_update().get(pk=product_id)
+            if not product.is_active or (
+                product.category_id and not product.category.active
+            ):
+                raise ValueError(f'{product.name} is no longer available.')
             cart_variant = _line_value(line, 'variant')
             variant_id = cart_variant.id if cart_variant else None
             variant = None
@@ -588,6 +697,13 @@ def _create_order(request, payment_method):
                     Product.objects.filter(pk=product.pk).update(stock=F('stock') - quantity)
 
             unit_price = product.price + (variant.price_adjustment if variant else 0)
+            item_coupon_discount = 0.0
+            if coupon and product.pk == coupon.product_id:
+                discount_per_unit = (
+                    Decimal(str(unit_price)) * Decimal(coupon.discount_percent) / Decimal('100')
+                ).quantize(Decimal('0.01'))
+                item_coupon_discount = float(discount_per_unit * quantity)
+                unit_price = float(Decimal(str(unit_price)) - discount_per_unit)
             OrderItem.objects.create(
                 order=order,
                 product=product,
@@ -597,6 +713,8 @@ def _create_order(request, payment_method):
                 unit_cost=product.cost_price,
                 variant_name=variant.display_value if variant else '',
                 stock_source=stock_source,
+                coupon_code=coupon.code if item_coupon_discount else '',
+                coupon_discount=item_coupon_discount,
             )
             total += unit_price * quantity
 
@@ -615,9 +733,15 @@ def _create_order(request, payment_method):
                 zipcode=zipcode,
             )
 
+        if coupon:
+            order.coupon_discount = sum(
+                item.coupon_discount for item in order.orderitem_set.all()
+            )
+            order.save(update_fields=['coupon_discount'])
         if not request.user.is_authenticated:
             request.session.pop('pending_checkout_email', None)
             request.session.pop('verified_checkout_email', None)
+        request.session.pop('checkout_coupon_code', None)
 
         payment = Payment.objects.create(
             order=order,
@@ -636,6 +760,21 @@ def checkout(request):
             messages.info(request, 'Your bag is empty. Add a product before checkout.')
             return redirect('store')
         return render(request, 'store/checkout.html', _checkout_context(request))
+
+    if request.method != 'POST':
+        return HttpResponseBadRequest('POST required.')
+    if request.POST.get('action') == 'apply_coupon':
+        code = request.POST.get('coupon_code', '').strip().upper()
+        coupon, _ = _coupon_for_cart(code, cartData(request)['items'])
+        if coupon:
+            request.session['checkout_coupon_code'] = coupon.code
+            coupon_message = f'{coupon.code} applied to {coupon.product.name}.'
+        else:
+            request.session.pop('checkout_coupon_code', None)
+            coupon_message = 'That coupon is invalid or does not apply to items in your bag.'
+        context = _checkout_context(request)
+        context['coupon_message'] = coupon_message
+        return render(request, 'store/checkout.html', context)
 
     try:
         order, payment = _create_order(request, request.POST.get('payment_method', ''))
@@ -916,6 +1055,36 @@ def seller_dashboard(request):
                 product.save()
                 messages.success(request, 'Your product listing was saved.')
                 return redirect('seller_dashboard')
+        elif action == 'save_coupon' and seller_store:
+            product_id = request.POST.get('product_id', '').strip()
+            if not product_id.isdigit():
+                return HttpResponseBadRequest('Invalid product listing.')
+            product = get_object_or_404(Product, pk=product_id, seller_store=seller_store)
+            coupon_form = ProductCouponForm(request.POST)
+            if coupon_form.is_valid():
+                with transaction.atomic():
+                    Product.objects.select_for_update().get(pk=product.pk)
+                    if product.coupons.count() >= 3:
+                        messages.error(request, 'Each product can have up to three coupon codes.')
+                    else:
+                        coupon = coupon_form.save(commit=False)
+                        coupon.product = product
+                        coupon.seller_store = seller_store
+                        coupon.save()
+                        messages.success(request, f'Coupon {coupon.code} was added to {product.name}.')
+                        return redirect('seller_dashboard')
+            else:
+                for field_errors in coupon_form.errors.values():
+                    for error in field_errors:
+                        messages.error(request, error)
+        elif action == 'delete_coupon' and seller_store:
+            coupon_id = request.POST.get('coupon_id', '').strip()
+            if not coupon_id.isdigit():
+                return HttpResponseBadRequest('Invalid coupon.')
+            coupon = get_object_or_404(ProductCoupon, pk=coupon_id, seller_store=seller_store)
+            coupon.delete()
+            messages.success(request, 'The coupon was removed.')
+            return redirect('seller_dashboard')
         elif action == 'edit_product' and seller_store:
             editing_product_id = request.POST.get('product_id', '').strip()
             if not editing_product_id.isdigit():
@@ -938,7 +1107,9 @@ def seller_dashboard(request):
             'editing_product_id': editing_product_id,
         })
 
-    products = seller_store.products.select_related('category').order_by('name')
+    products = seller_store.products.select_related('category').prefetch_related(
+        'coupons',
+    ).order_by('name')
     seller_lines = list(
         OrderItem.objects.filter(
             product__seller_store=seller_store,

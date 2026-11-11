@@ -10,7 +10,7 @@
                 {% csrf_token %}
                 {% if not request.user.is_authenticated %}
                 <div class="form-field">
-                    <input required class="form-control" type="text" name="name" autocomplete="name" placeholder="Full name">
+                    <input required class="form-control" type="text" name="name" autocomplete="name" value="{{ checkout_name }}" placeholder="Full name">
                 </div>
                 {% endif %}
                 <div class="form-field">
@@ -29,28 +29,36 @@
                 </div>
                 {% endif %}
                 <div class="form-field">
-                    <input required class="form-control" type="tel" name="phone" autocomplete="tel" value="{% if request.user.is_authenticated %}{{ request.user.customer.phone|default:'' }}{% endif %}" placeholder="Contact phone number">
+                    <input required class="form-control" type="tel" name="phone" autocomplete="tel" value="{% if checkout_phone %}{{ checkout_phone }}{% elif request.user.is_authenticated %}{{ request.user.customer.phone|default:'' }}{% endif %}" placeholder="Contact phone number">
                 </div>
+
+                <section class="checkout-coupon">
+                    <label for="checkout-coupon-code">Seller coupon code</label>
+                    <div class="delivery-check-row"><input id="checkout-coupon-code" class="form-control" name="coupon_code" maxlength="24" value="{{ coupon_code }}" placeholder="Enter a seller coupon"><button type="submit" class="btn btn-outline-dark" name="action" value="apply_coupon" formnovalidate>Apply</button></div>
+                    {% if coupon_message %}<p class="email-verified" role="status">{{ coupon_message }}</p>{% endif %}
+                    {% if coupon_error %}<p class="seller-error" role="alert">{{ coupon_error }}</p>{% endif %}
+                    {% if available_coupons %}<small>Available: {% for coupon in available_coupons %}<code>{{ coupon.code }}</code> ({{ coupon.discount_percent|floatformat:0 }}% off {{ coupon.product.name }}){% if not forloop.last %} · {% endif %}{% endfor %}</small>{% endif %}
+                </section>
 
                 {% if order.shipping %}
                 <hr>
                 <h3>Shipping address</h3>
                 <div class="form-field">
-                    <input required class="form-control" type="text" name="address" autocomplete="street-address" placeholder="Street address">
+                    <input required class="form-control" type="text" name="address" autocomplete="street-address" value="{{ checkout_address }}" placeholder="Street address">
                 </div>
                 <div class="form-field">
                     <select required class="form-control" name="state" autocomplete="address-level1">
                         <option value="">Select state</option>
-                        {% for state in states %}<option value="{{ state }}">{{ state }}</option>{% endfor %}
+                        {% for state in states %}<option value="{{ state }}" {% if checkout_state == state %}selected{% endif %}>{{ state }}</option>{% endfor %}
                     </select>
                 </div>
                 <div class="form-field">
-                    <input required class="form-control" type="text" name="city" autocomplete="address-level2" placeholder="City">
+                    <input required class="form-control" type="text" name="city" autocomplete="address-level2" value="{{ checkout_city }}" placeholder="City">
                 </div>
                 <div class="form-field">
                     <label for="checkout-pincode">6-digit Indian PIN code</label>
                     <div class="delivery-check-row">
-                        <input id="checkout-pincode" required class="form-control" type="text" name="zipcode" inputmode="numeric" autocomplete="postal-code" pattern="[1-9][0-9]{5}" maxlength="6" placeholder="Enter PIN code" aria-describedby="checkout-postal-message">
+                        <input id="checkout-pincode" required class="form-control" type="text" name="zipcode" value="{{ checkout_zipcode }}" inputmode="numeric" autocomplete="postal-code" pattern="[1-9][0-9]{5}" maxlength="6" placeholder="Enter PIN code" aria-describedby="checkout-postal-message">
                         <button id="checkout-postal-check" class="btn btn-outline-dark" type="button">Check PIN</button>
                     </div>
                     <p id="checkout-postal-message" class="delivery-message" aria-live="polite">Check that your PIN code has a listed delivery area, then confirm the suggested city and state.</p>
@@ -60,10 +68,10 @@
                 <hr>
                 <fieldset class="payment-methods">
                     <legend>Choose payment method</legend>
-                    <label><input required type="radio" name="payment_method" value="cod"> Cash on delivery</label>
-                    <label><input required type="radio" name="payment_method" value="upi_manual"> UPI transfer (manual verification)</label>
+                    <label><input required type="radio" name="payment_method" value="cod" {% if selected_payment_method == 'cod' %}checked{% endif %}> Cash on delivery</label>
+                    <label><input required type="radio" name="payment_method" value="upi_manual" {% if selected_payment_method == 'upi_manual' %}checked{% endif %}> UPI transfer (manual verification)</label>
                     {% if payu_enabled %}
-                    <label><input required type="radio" name="payment_method" value="payu"> PayU (UPI / cards, subject to your PayU account)</label>
+                    <label><input required type="radio" name="payment_method" value="payu" {% if selected_payment_method == 'payu' %}checked{% endif %}> PayU (UPI / cards, subject to your PayU account)</label>
                     {% else %}
                     <p class="text-muted small">PayU checkout will appear after the merchant key and salt are configured.</p>
                     {% endif %}
@@ -90,7 +98,8 @@
             </div>
             {% endfor %}
             <h5>Items: {{ order.get_cart_items }}</h5>
-            <h5>Total: ₹{{ order.get_cart_total|floatformat:2 }}</h5>
+            {% if coupon_discount %}<p class="checkout-discount">Coupon savings: −₹{{ coupon_discount|floatformat:2 }}</p>{% endif %}
+            <h5>Total: ₹{{ checkout_total|floatformat:2 }}</h5>
         </div>
     </div>
 </div>

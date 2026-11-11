@@ -40,7 +40,7 @@ def cookieCart(request):
 
     products = {
         product.id: product
-        for product in Product.objects.filter(id__in=product_ids).prefetch_related(
+        for product in Product.objects.filter(id__in=product_ids, is_active=True).prefetch_related(
             Prefetch('variants', queryset=ProductVariant.objects.filter(active=True), to_attr='active_variants')
         )
     }

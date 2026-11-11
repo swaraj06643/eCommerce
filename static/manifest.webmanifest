@@ -1,0 +1,15 @@
+{
+  "name": "Avatar Store",
+  "short_name": "Avatar",
+  "description": "Shop everyday fashion, electronics, home, books, beauty and travel finds.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fffaf7",
+  "theme_color": "#e85f54",
+  "categories": ["shopping"],
+  "icons": [
+    { "src": "/static/images/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/images/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

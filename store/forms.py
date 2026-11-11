@@ -1,9 +1,9 @@
 import math
 
 from django import forms
-from django.core.validators import MinLengthValidator, MinValueValidator
+from django.core.validators import MinLengthValidator, MinValueValidator, MaxValueValidator, RegexValidator
 
-from .models import Category, Product, SellerStore
+from .models import Category, Product, ProductCoupon, SellerStore
 
 
 class SellerStoreForm(forms.ModelForm):
@@ -39,6 +39,10 @@ class SellerProductForm(forms.ModelForm):
         self.fields['category'].required = True
         self.fields['price'].validators.append(MinValueValidator(0.01))
         self.fields['list_price'].validators.append(MinValueValidator(0.01))
+        self.fields['list_price'].help_text = (
+            'Optional original price. The sale percentage is calculated from this '
+            'and your selling price.'
+        )
         if not self.is_bound:
             self.fields['low_stock_threshold'].initial = 5
         self.fields['name'].required = True
@@ -62,3 +66,24 @@ class SellerProductForm(forms.ModelForm):
         if list_price is not None and not math.isfinite(list_price):
             self.add_error('list_price', 'Enter a finite list price.')
         return cleaned_data
+
+
+class ProductCouponForm(forms.ModelForm):
+    class Meta:
+        model = ProductCoupon
+        fields = ('code', 'discount_percent')
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['code'].validators.append(RegexValidator(
+            regex=r'^[A-Z0-9][A-Z0-9_-]{2,23}$',
+            message='Use 3–24 letters, numbers, hyphens or underscores.',
+        ))
+        self.fields['discount_percent'].validators.extend([
+            MinValueValidator(0.01),
+            MaxValueValidator(90),
+        ])
+        self.fields['discount_percent'].help_text = 'Extra discount on this product’s current selling price (up to 90%).'
+
+    def clean_code(self):
+        return self.cleaned_data['code'].strip().upper()

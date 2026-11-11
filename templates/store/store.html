@@ -76,40 +76,62 @@
             <a href="{% url 'store' %}?q={{ search_term|urlencode }}">Clear</a>
         </form>
         {% endif %}
-        <div class="row product-grid">
-      {% for product in products %}
-        <div class="col-lg-3 col-md-4 col-sm-6 product-column">
-            <article class="product-card">
-                <div class="product-image-wrap">
-                    <a href="{% url 'product_detail' product.id %}" aria-label="View {{ product.name }} details">
-                        <img class="thumbnail" src="{{ product.imageURL }}" alt="{{ product.name }}">
-                    </a>
-                    <span class="product-tag">POPULAR</span>
+        {% if show_category_sections %}
+            {% for section in category_sections %}
+            <section class="category-shelf" aria-labelledby="category-{{ section.slug }}">
+                <div class="collection-heading shelf-heading">
+                    <div><p class="section-kicker">SHOP BY CATEGORY</p><h2 id="category-{{ section.slug }}">{{ section.name }}</h2></div>
+                    {% if section.category %}<a class="collection-note" href="{% url 'store' %}?category={{ section.slug }}">View all {{ section.name }} &rarr;</a>{% endif %}
                 </div>
-                <div class="product-info">
-                    {% if product.category %}<p class="product-category">{{ product.category.name }}</p>{% endif %}
-                    <h3><a class="product-title-link" href="{% url 'product_detail' product.id %}">{{ product.name }}</a></h3>
-                    <div class="product-bottom">
-                        <div class="product-price-group">
-                            <strong class="product-price">&#8377;{{ product.price|floatformat:2 }}</strong>
-                            {% if product.list_price and product.list_price > product.price %}
-                            <del class="product-list-price">&#8377;{{ product.list_price|floatformat:2 }}</del>
-                            {% endif %}
-                        </div>
-                        {% if product.has_variants %}
-                        <a class="add-to-bag choose-options" href="{% url 'product_detail' product.id %}" aria-label="Choose options for {{ product.name }}">Choose</a>
-                        {% else %}
-                        <button data-product="{{ product.id }}" data-action="add" class="add-to-bag update-cart" aria-label="Add {{ product.name }} to cart" {% if product.stock == 0 %}disabled{% endif %}>+</button>
-                        {% endif %}
+                <div class="row product-grid">
+                    {% for product in section.products %}
+                    <div class="col-lg-3 col-md-4 col-sm-6 product-column">
+                        <article class="product-card">
+                            <div class="product-image-wrap">
+                                <a href="{% url 'product_detail' product.id %}" aria-label="View {{ product.name }} details"><img class="thumbnail" src="{{ product.imageURL }}" alt="{{ product.name }}"></a>
+                                {% if product.discount_percent %}<span class="product-tag">{{ product.discount_percent }}% OFF</span>{% endif %}
+                            </div>
+                            <div class="product-info">
+                                <p class="product-category">{{ section.name }}</p>
+                                <h3><a class="product-title-link" href="{% url 'product_detail' product.id %}">{{ product.name }}</a></h3>
+                                <div class="product-bottom">
+                                    <div class="product-price-group"><strong class="product-price">&#8377;{{ product.price|floatformat:2 }}</strong>{% if product.list_price and product.list_price > product.price %}<del class="product-list-price">&#8377;{{ product.list_price|floatformat:2 }}</del>{% endif %}</div>
+                                    {% if product.has_variants %}<a class="add-to-bag choose-options" href="{% url 'product_detail' product.id %}"></a>Choose</a>{% else %}<button data-product="{{ product.id }}" data-action="add" class="add-to-bag update-cart" aria-label="Add {{ product.name }} to cart" {% if product.stock == 0 %}disabled{% endif %}>+</button>{% endif %}
+                                </div>
+                                <p class="product-description">{{ product.description }}</p>
+                                {% if product.seller_store %}<p class="product-seller">Sold by {{ product.seller_store.name }}</p>{% endif %}
+                                {% if product.coupons.all %}<p class="coupon-teaser">Seller coupons available on this product</p>{% endif %}
+                            </div>
+                        </article>
                     </div>
-                    <p class="product-description">{{ product.description }}</p>
-                    {% if product.seller_store %}<p class="product-seller">Sold by {{ product.seller_store.name }}</p>{% endif %}
+                    {% endfor %}
                 </div>
-            </article>
+            </section>
+            {% empty %}<p class="empty-state">No products are available yet.</p>{% endfor %}
+            {% if products %}<p class="uncategorized-note"><a href="{% url 'store' %}?category=">Browse all products</a></p>{% endif %}
+        {% else %}
+        <div class="row product-grid">
+          {% for product in products %}
+            <div class="col-lg-3 col-md-4 col-sm-6 product-column">
+                <article class="product-card">
+                    <div class="product-image-wrap">
+                        <a href="{% url 'product_detail' product.id %}" aria-label="View {{ product.name }} details"><img class="thumbnail" src="{{ product.imageURL }}" alt="{{ product.name }}"></a>
+                        {% if product.discount_percent %}<span class="product-tag">{{ product.discount_percent }}% OFF</span>{% endif %}
+                    </div>
+                    <div class="product-info">
+                        {% if product.category %}<p class="product-category">{{ product.category.name }}</p>{% endif %}
+                        <h3><a class="product-title-link" href="{% url 'product_detail' product.id %}">{{ product.name }}</a></h3>
+                        <div class="product-bottom">
+                            <div class="product-price-group"><strong class="product-price">&#8377;{{ product.price|floatformat:2 }}</strong>{% if product.list_price and product.list_price > product.price %}<del class="product-list-price">&#8377;{{ product.list_price|floatformat:2 }}</del>{% endif %}</div>
+                            {% if product.has_variants %}<a class="add-to-bag choose-options" href="{% url 'product_detail' product.id %}">Choose</a>{% else %}<button data-product="{{ product.id }}" data-action="add" class="add-to-bag update-cart" aria-label="Add {{ product.name }} to cart" {% if product.stock == 0 %}disabled{% endif %}>+</button>{% endif %}
+                        </div>
+                        <p class="product-description">{{ product.description }}</p>
+                        {% if product.seller_store %}<p class="product-seller">Sold by {{ product.seller_store.name }}</p>{% endif %}
+                    </div>
+                </article>
+            </div>
+          {% empty %}<div class="col-12"><p class="empty-state">No products match these filters. <a href="{% url 'store' %}">Clear filters</a></p></div>{% endfor %}
         </div>
-      {% empty %}
-        <div class="col-12"><p class="empty-state">No products match these filters. <a href="{% url 'store' %}">Clear filters</a></p></div>
-      {% endfor %}
-        </div>
+        {% endif %}
      </section>
 {% endblock content %}

@@ -3,7 +3,7 @@ Avatar is an eCommerce store created by Subhasiosh Rath in Odisha, with a welcom
 
 ## Features
 - Customer registration, login, editable profile, and order history.
-- Product categories, variants, search, price/category/option filters, and product detail pages.
+- Ordered, category-grouped storefront sections, product variants, search, price/category/option filters, and product detail pages.
 - Guest and signed-in bags with quantity controls.
 - Checkout with email-link verification, Indian postal-directory PIN/locality checks, COD, manual UPI verification, and configurable PayU.
 - Order status and carrier tracking details maintained by store staff; customer cancellation and return requests.
@@ -13,7 +13,9 @@ Avatar is an eCommerce store created by Subhasiosh Rath in Odisha, with a welcom
 - Seller vault summary based on recorded paid and pending orders; payouts are not processed by the app.
 - Dedicated seller portal with seller login and registration at `/seller-portal/`.
 - Product, category, variant, customer, order, and payment administration.
-- Product detail pages with descriptions, current prices, and admin-managed offers.
+- Product detail pages with seller sale prices, automatically calculated percentage savings, descriptions, and offers.
+- Seller-defined product coupons (up to three codes per listing), validated and applied to eligible items at checkout with discounts recorded on the order and payment.
+- Installable progressive web app with a web app manifest, home-screen install prompt, cached static assets, and an offline notice.
 - Signed-in users can open seller settings from Account → **Be a seller**, publish or hide listings, update stock, and review orders containing their products. Seller listings require an active product category and appear in the storefront's category navigation.
 - Delivery PIN entry and address collection at checkout. Postal checks validate the PIN, delivery status, city and state against India Post directory data; they do not prove a street address or phone ownership.
 - Help and support page with contact details for avatarshop@gmail.com.
@@ -108,7 +110,7 @@ $env:DEFAULT_FROM_EMAIL = "avatarshop@gmail.com"
 
 Checkout stays blocked until the customer opens the one-hour verification link or confirms the matching email code.
 
-Phone OTP sign-in uses MSG91's OTP API (see [MSG91 OTP documentation](https://docs.msg91.com/otp)). Create and approve an OTP template in MSG91, then configure the credentials locally:
+Phone OTP sign-in uses MSG91's OTP API (see [MSG91 OTP documentation](https://docs.msg91.com/otp)). The shopper must save a unique Indian mobile number in Account → profile before phone sign-in can be used. Create and approve an OTP template in MSG91, then configure the credentials locally:
 
 ```powershell
 $env:MSG91_AUTH_KEY = "your-msg91-auth-key"
@@ -116,7 +118,7 @@ $env:MSG91_OTP_TEMPLATE_ID = "your-approved-otp-template-id"
 python manage.py runserver
 ```
 
-Never commit provider credentials. Phone OTP sign-in works for accounts with a saved Indian mobile number; the OTP is sent and verified by MSG91. SMS delivery and verification depend on an active MSG91 account, approved template, DLT compliance, account credits, and provider coverage. A successful postal lookup confirms only postal-directory delivery-area data; it does not prove a street address exists or guarantee courier coverage.
+Never commit provider credentials. Phone OTP sign-in works for accounts with a saved Indian mobile number; the OTP is sent and verified by MSG91. SMS delivery and verification depend on an active MSG91 account, approved template, DLT compliance, account credits, and provider coverage. The install prompt is available on browsers that support PWA installation; production installation requires HTTPS (localhost is allowed for development), and iOS users can choose Add to Home Screen from Safari's Share menu. Product coupons are additional discounts against the seller's current selling price, not the crossed-out list price. A successful postal lookup confirms only postal-directory delivery-area data; it does not prove a street address exists or guarantee courier coverage.
 
 ## Deployed
 👉 Live Demo: [Avatar Store](https://ruhulaminparvez.pythonanywhere.com/)

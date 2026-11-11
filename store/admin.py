@@ -10,6 +10,7 @@ from .models import (
     OrderItem,
     Payment,
     Product,
+    ProductCoupon,
     ProductVariant,
     SellerStore,
     ShippingAddress,
@@ -42,8 +43,9 @@ class StockLevelFilter(admin.SimpleListFilter):
 
 @admin.register(Category)
 class CategoryAdmin(admin.ModelAdmin):
-    list_display = ('name', 'slug', 'active')
+    list_display = ('name', 'slug', 'sort_order', 'active')
     list_filter = ('active',)
+    ordering = ('sort_order', 'name')
     prepopulated_fields = {'slug': ('name',)}
     search_fields = ('name',)
 
@@ -83,13 +85,17 @@ class OrderAdmin(admin.ModelAdmin):
     )
     list_filter = ('status', 'payment_method', 'payment_status', 'date_order')
     search_fields = ('order_number', 'customer__name', 'customer__email', 'tracking_number')
-    readonly_fields = ('public_token', 'visitor_key', 'transaction_id', 'date_order', 'delivered_at')
+    readonly_fields = (
+        'public_token', 'visitor_key', 'transaction_id', 'date_order', 'delivered_at',
+        'coupon_code', 'coupon_discount',
+    )
     inlines = (OrderItemInline,)
     fieldsets = (
         ('Order', {'fields': ('order_number', 'customer', 'status', 'date_order', 'delivered_at')}),
         ('Payment', {'fields': ('payment_method', 'payment_status', 'transaction_id')}),
         ('Shipping', {'fields': ('shipping_partner', 'tracking_number', 'tracking_url')}),
         ('Customer requests', {'fields': ('cancellation_reason', 'return_reason')}),
+        ('Discount', {'fields': ('coupon_code', 'coupon_discount')}),
         ('Internal', {'fields': ('public_token', 'visitor_key', 'inventory_released')}),
     )
 
@@ -129,3 +135,10 @@ class PaymentAdmin(admin.ModelAdmin):
 admin.site.register(Customer)
 admin.site.register(ShippingAddress)
 admin.site.register(SellerStore)
+
+
+@admin.register(ProductCoupon)
+class ProductCouponAdmin(admin.ModelAdmin):
+    list_display = ('code', 'product', 'seller_store', 'discount_percent', 'active', 'created_at')
+    list_filter = ('active', 'seller_store')
+    search_fields = ('code', 'product__name', 'seller_store__name')

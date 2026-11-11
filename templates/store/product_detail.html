@@ -61,6 +61,12 @@
             {% else %}
                 <p>No additional offer is listed for this product right now. The price above is the current store price.</p>
             {% endif %}
+            {% if coupons %}
+            <div class="seller-coupon-list">
+                <strong>Seller coupons</strong></strong>
+                {% for coupon in coupons %}<p><code>{{ coupon.code }}</code> — save {{ coupon.discount_percent|floatformat:0 }}% more on this product. Apply it at checkout.</p>{% endfor %}
+            </div>
+            {% endif %}
             <p class="detail-payment-note">Available payment methods are shown at checkout.</p>
         </section>
 

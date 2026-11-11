@@ -7,9 +7,10 @@ class Category(models.Model):
     name = models.CharField(max_length=100, unique=True)
     slug = models.SlugField(max_length=110, unique=True)
     active = models.BooleanField(default=True)
+    sort_order = models.PositiveSmallIntegerField(default=0)
 
     class Meta:
-        ordering = ('name',)
+        ordering = ('sort_order', 'name')
         verbose_name_plural = 'categories'
 
     def __str__(self):
@@ -65,6 +66,12 @@ class Product(models.Model):
 
     def __str__(self):
         return self.name
+
+    @property
+    def discount_percent(self):
+        if self.list_price and self.price is not None and self.list_price > self.price:
+            return round((self.list_price - self.price) / self.list_price * 100)
+        return 0
 
     @property
     def has_variants(self):
@@ -142,6 +149,8 @@ class Order(models.Model):
     return_reason = models.TextField(blank=True)
     visitor_key = models.CharField(max_length=40, blank=True)
     inventory_released = models.BooleanField(default=False)
+    coupon_code = models.CharField(max_length=24, blank=True)
+    coupon_discount = models.FloatField(default=0)
 
     def __str__(self):
         return str(self.order_number or self.id)
@@ -177,6 +186,8 @@ class OrderItem(models.Model):
     unit_cost = models.FloatField(null=True, blank=True)
     variant_name = models.CharField(max_length=160, blank=True)
     stock_source = models.CharField(max_length=12, default='untracked')
+    coupon_code = models.CharField(max_length=24, blank=True)
+    coupon_discount = models.FloatField(default=0)
     date_added = models.DateTimeField(auto_now_add=True)
 
     @property
@@ -206,6 +217,39 @@ class Payment(models.Model):
 
     def __str__(self):
         return f'{self.transaction_id} ({self.status})'
+
+
+class ProductCoupon(models.Model):
+    seller_store = models.ForeignKey(
+        SellerStore,
+        on_delete=models.CASCADE,
+        related_name='coupons',
+    )
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.CASCADE,
+        related_name='coupons',
+    )
+    code = models.CharField(max_length=24, unique=True)
+    discount_percent = models.DecimalField(max_digits=5, decimal_places=2)
+    active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ('code',)
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(discount_percent__gt=0, discount_percent__lte=90),
+                name='coupon_discount_between_0_and_90',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.code} ({self.discount_percent}% off {self.product})'
+
+    def save(self, *args, **kwargs):
+        self.code = self.code.strip().upper()
+        super().save(*args, **kwargs)
 
 
 class ProductVisit(models.Model):
