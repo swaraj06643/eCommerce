@@ -2,38 +2,52 @@ import hashlib
 import json
 import os
 import re
+import shutil
 from datetime import timedelta
-from urllib.parse import parse_qs, urlsplit
+from io import BytesIO
+import tempfile
+from urllib.parse import parse_qs, quote, urlsplit
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.core import mail
-from django.test import TestCase
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from django.test import override_settings
+
 from unittest.mock import patch as mock_patch
+
+from PIL import Image
 
 from .models import (
     Category,
     Customer,
     EmailVerification,
     Order,
+    OrderFulfillment,
     OrderItem,
     Payment,
     Product,
     ProductCoupon,
+    ProductImage,
     ProductVariant,
     SellerStore,
     ShippingAddress,
 )
 from .postal import PostalLookupError, validate_delivery_location
 from .sms import send_phone_otp, verify_phone_otp
+from .views import PayPalGatewayError
 from eCommerce.settings import database_config
 
 
 class StorefrontTests(TestCase):
     def setUp(self):
+        self.media_root = tempfile.mkdtemp()
+        media_settings = override_settings(MEDIA_ROOT=self.media_root)
+        media_settings.enable()
+        self.addCleanup(shutil.rmtree, self.media_root, ignore_errors=True)
+        self.addCleanup(media_settings.disable)
         self.product = Product.objects.create(
             name='Everyday Headphones',
             price=179.0,
@@ -59,6 +73,18 @@ class StorefrontTests(TestCase):
         )
         postal_patcher.start()
         self.addCleanup(postal_patcher.stop)
+
+    def make_product_photos(self, count=3):
+        uploads = []
+        for index in range(count):
+            image_data = BytesIO()
+            Image.new('RGB', (4, 4), color=(index * 50, 80, 120)).save(image_data, format='PNG')
+            uploads.append(SimpleUploadedFile(
+                f'product-photo-{index}.png',
+                image_data.getvalue(),
+                content_type='image/png',
+            ))
+        return uploads
 
     def test_delivery_location_matches_postal_directory(self):
         office = {
@@ -178,7 +204,11 @@ class StorefrontTests(TestCase):
         self.assertEqual(order.coupon_discount, 17.9)
         self.assertEqual(line.unit_price, 161.1)
         self.assertEqual(line.coupon_code, 'SAVE10')
-        self.assertEqual(payment.amount, 161.1)
+        self.assertEqual(order.platform_fee, 3.22)
+        self.assertEqual(order.platform_fee_gst, 0.58)
+        self.assertEqual(order.delivery_fee, 0)
+        self.assertEqual(order.get_total_amount, 164.9)
+        self.assertEqual(payment.amount, 164.9)
 
     def test_seller_can_add_at_most_three_coupons_per_product(self):
         seller = User.objects.create_user(username='coupon-owner', password='Password!123')
@@ -223,8 +253,96 @@ class StorefrontTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response['Service-Worker-Allowed'], '/')
-        self.assertContains(response, 'avatar-store-v1')
+        self.assertContains(response, 'avatar-store-v4')
+        self.assertContains(response, 'order-status.js')
         self.assertContains(response, "request.mode === 'navigate'")
+
+    def test_out_of_stock_product_controls_disable_and_reenable_after_restock(self):
+        seller = User.objects.create_user(username='stock-seller', password='Password!123')
+        SellerStore.objects.create(
+            owner=seller,
+            name='Stock Store',
+            description='A seller store for inventory controls.',
+        )
+        self.product.seller_store = seller.seller_store
+        self.product.stock = 0
+        self.product.save(update_fields=['seller_store', 'stock'])
+
+        response = self.client.get(reverse('product_detail', args=[self.product.pk]))
+        self.assertContains(response, 'Currently out of stock')
+        self.assertContains(response, 'detail-buy update-cart" disabled')
+        self.assertContains(response, 'detail-add update-cart" disabled')
+        self.assertContains(response, 'The seller must restock this listing')
+        self.assertContains(response, '>Out of stock</button>')
+        home = self.client.get(reverse('store'))
+        self.assertContains(home, 'class="add-to-bag update-cart is-out-of-stock"')
+
+        self.client.force_login(seller)
+        dashboard = self.client.get(reverse('seller_dashboard'))
+        self.assertContains(dashboard, 'type="number" name="stock"')
+        self.assertNotContains(dashboard, 'numbe</label>r')
+        response = self.client.post(reverse('seller_dashboard'), {
+            'action': 'update_stock',
+            'product_id': self.product.pk,
+            'stock': '4',
+        })
+        self.assertEqual(response.status_code, 302)
+        response = self.client.get(reverse('product_detail', args=[self.product.pk]))
+        self.assertNotContains(response, 'detail-buy update-cart" disabled')
+        self.assertNotContains(response, 'detail-add update-cart" disabled')
+
+    def test_seller_product_can_be_added_to_authenticated_cart_with_csrf(self):
+        seller = User.objects.create_user(username='cart-seller', password='Password!123')
+        seller_store = SellerStore.objects.create(
+            owner=seller,
+            name='Cart Seller',
+            description='Products for authenticated cart tests.',
+        )
+        self.product.seller_store = seller_store
+        self.product.save(update_fields=['seller_store'])
+        buyer = User.objects.create_user(
+            username='cart-buyer',
+            email='cartbuyer@example.com',
+            password='Password!123',
+        )
+        client = Client(enforce_csrf_checks=True)
+        client.force_login(buyer)
+
+        client.get(reverse('store'))
+        csrf_token = client.cookies['csrftoken'].value
+        response = client.post(
+            reverse('update_item'),
+            data=json.dumps({
+                'productId': self.product.pk,
+                'action': 'add',
+            }),
+            content_type='application/json',
+            HTTP_X_CSRFTOKEN=csrf_token,
+        )
+
+        self.assertEqual(response.status_code, 200, response.content.decode())
+        response = client.get(reverse('cart'))
+        self.assertContains(response, 'Everyday Headphones')
+        self.assertEqual(response.context['order']['get_cart_items'], 1)
+
+    def test_encoded_guest_cart_cookie_loads_seller_products(self):
+        seller = User.objects.create_user(username='guest-cart-seller', password='Password!123')
+        seller_store = SellerStore.objects.create(
+            owner=seller,
+            name='Guest Cart Seller',
+            description='Products for guest cart tests.',
+        )
+        self.product.seller_store = seller_store
+        self.product.save(update_fields=['seller_store'])
+        self.client.cookies['cart'] = quote(json.dumps({
+            str(self.product.pk): {'quantity': 2},
+        }))
+
+        response = self.client.get(reverse('cart'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Everyday Headphones')
+        self.assertEqual(response.context['order']['get_cart_items'], 2)
 
     def test_unknown_product_returns_not_found(self):
         response = self.client.get(reverse('product_detail', args=[99999]))
@@ -287,8 +405,47 @@ class StorefrontTests(TestCase):
         self.assertEqual(order.payment_status, 'pending')
         self.assertEqual(self.product.stock, 3)
         self.assertEqual(order.get_cart_total, 358.0)
-        self.assertTrue(Payment.objects.filter(order=order, amount=358.0).exists())
+        self.assertEqual(order.get_total_amount, 366.45)
+        self.assertEqual(order.gst_amount, 0)
+        self.assertEqual(order.platform_fee, 7.16)
+        self.assertEqual(order.platform_fee_gst, 1.29)
+        self.assertEqual(order.delivery_fee, 0)
+        self.assertTrue(Payment.objects.filter(order=order, amount=366.45).exists())
         self.assertTrue(ShippingAddress.objects.filter(order=order, zipcode='751001').exists())
+
+    def test_checkout_calculates_product_gst_platform_fee_and_free_delivery(self):
+        self.product.gst_rate = 18
+        self.product.save(update_fields=['gst_rate'])
+        self.client.cookies['cart'] = json.dumps({str(self.product.id): {'quantity': 1}})
+        checkout = self.client.get(reverse('checkout'))
+        self.assertContains(checkout, 'GST on products: ₹32.22')
+        self.assertContains(checkout, 'Platform fee (2.00%): ₹3.58')
+        self.assertContains(checkout, 'GST on platform fee: ₹0.64')
+        self.assertContains(checkout, 'Delivery: <strong>FREE</strong>')
+        self.assertContains(checkout, 'Total to pay: ₹215.44')
+
+        response = self.client.post(reverse('checkout'), {
+            'payment_method': 'cod',
+            'name': 'GST Buyer',
+            'email': 'buyer@example.com',
+            'phone': '9876543210',
+            'address': '12 Market Road',
+            'city': 'Bhubaneswar',
+            'state': 'Odisha',
+            'zipcode': '751001',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        order = Order.objects.get(order_number__startswith='AV-')
+        line = order.orderitem_set.get()
+        payment = Payment.objects.get(order=order)
+        self.assertEqual(order.gst_amount, 32.22)
+        self.assertEqual(order.platform_fee, 3.58)
+        self.assertEqual(order.platform_fee_gst, 0.64)
+        self.assertEqual(order.delivery_fee, 0)
+        self.assertEqual(order.get_total_amount, 215.44)
+        self.assertEqual(line.gst_amount, 32.22)
+        self.assertEqual(payment.amount, 215.44)
 
     def test_signed_in_customer_can_checkout_without_email_verification(self):
         user = User.objects.create_user(
@@ -324,7 +481,7 @@ class StorefrontTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertTrue(Order.objects.filter(customer=user.customer, complete=True).exists())
 
-    def test_checkout_blocks_unverified_email(self):
+    def test_checkout_does_not_require_email_verification(self):
         EmailVerification.objects.filter(email='buyer@example.com').delete()
         self.client.cookies['cart'] = json.dumps({str(self.product.id): {'quantity': 1}})
         response = self.client.post(reverse('checkout'), {
@@ -337,9 +494,8 @@ class StorefrontTests(TestCase):
             'state': 'Odisha',
             'zipcode': '751001',
         })
-        self.assertEqual(response.status_code, 400)
-        self.assertContains(response, 'Verify your email address', status_code=400)
-        self.assertFalse(Order.objects.filter(order_number__startswith='AV-').exists())
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(Order.objects.filter(order_number__startswith='AV-').exists())
 
     @override_settings(
         EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
@@ -364,7 +520,7 @@ class StorefrontTests(TestCase):
         response = self.client.get(reverse('checkout'))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'newbuyer@example.com')
-        self.assertContains(response, 'Email verified')
+        self.assertNotContains(response, 'Send email verification link')
 
     @override_settings(
         EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
@@ -641,6 +797,24 @@ class StorefrontTests(TestCase):
     @override_settings(
         PAYU_KEY='merchant-key',
         PAYU_SALT='merchant-salt',
+        PAYPAL_CLIENT_ID='paypal-client',
+        PAYPAL_CLIENT_SECRET='paypal-secret',
+    )
+    def test_checkout_shows_configured_payments_and_names_supported_upi_apps(self):
+        self.client.cookies['cart'] = json.dumps({str(self.product.id): {'quantity': 1}})
+
+        response = self.client.get(reverse('checkout'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'value="payu"')
+        self.assertContains(response, 'value="paypal"')
+        self.assertContains(response, 'Google Pay')
+        self.assertContains(response, 'PhonePe')
+        self.assertContains(response, 'PayPal')
+
+    @override_settings(
+        PAYU_KEY='merchant-key',
+        PAYU_SALT='merchant-salt',
         PAYU_PAYMENT_URL='https://test.payu.in/_payment',
     )
     def test_payu_checkout_posts_server_calculated_amount(self):
@@ -659,10 +833,184 @@ class StorefrontTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'https://test.payu.in/_payment')
-        self.assertContains(response, '179.00')
+        self.assertContains(response, '183.22')
         self.assertNotContains(response, 'value="1.00"')
         payment = Payment.objects.get(method='payu')
-        self.assertEqual(payment.amount, 179.0)
+        self.assertEqual(payment.amount, 183.22)
+
+    @override_settings(
+        PAYPAL_CLIENT_ID='paypal-client',
+        PAYPAL_CLIENT_SECRET='paypal-secret',
+        PAYPAL_API_BASE='https://api-m.sandbox.paypal.com',
+    )
+    def test_paypal_checkout_creates_provider_order_with_server_total(self):
+        self.client.cookies['cart'] = json.dumps({str(self.product.id): {'quantity': 1}})
+        provider_order = {
+            'id': 'PAYPAL-ORDER-123',
+            'links': [{
+                'rel': 'approve',
+                'href': 'https://www.sandbox.paypal.com/checkoutnow?token=PAYPAL-ORDER-123',
+            }],
+        }
+        checkout_fields = {
+            'payment_method': 'paypal',
+            'name': 'Test Buyer',
+            'email': 'buyer@example.com',
+            'phone': '9876543210',
+            'address': '12 Market Road',
+            'city': 'Bhubaneswar',
+            'state': 'Odisha',
+            'zipcode': '751001',
+            'amount': '1.00',
+        }
+
+        with patch('store.views.paypal_api_request', return_value=provider_order) as api_request:
+            response = self.client.post(reverse('checkout'), checkout_fields)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response['Location'], provider_order['links'][0]['href'])
+        payment = Payment.objects.get(method='paypal')
+        self.assertEqual(payment.amount, 183.22)
+        self.assertEqual(payment.gateway_payment_id, 'PAYPAL-ORDER-123')
+        payload = api_request.call_args.args[2]
+        self.assertEqual(payload['purchase_units'][0]['amount'], {
+            'currency_code': 'INR', 'value': '183.22',
+        })
+
+    @override_settings(
+        PAYPAL_CLIENT_ID='paypal-client',
+        PAYPAL_CLIENT_SECRET='paypal-secret',
+        PAYPAL_API_BASE='https://api-m.sandbox.paypal.com',
+    )
+    def test_paypal_setup_error_releases_stock_and_restores_signed_in_cart(self):
+        buyer = User.objects.create_user(
+            username='paypal-buyer',
+            email='buyer@example.com',
+            password='Password!123',
+        )
+        Customer.objects.create(
+            user=buyer,
+            name='PayPal Buyer',
+            email='buyer@example.com',
+        )
+        open_cart = Order.objects.create(customer=buyer.customer, complete=False)
+        OrderItem.objects.create(order=open_cart, product=self.product, quantity=1)
+        self.client.force_login(buyer)
+
+        with patch(
+            'store.views.paypal_api_request',
+            side_effect=PayPalGatewayError('PayPal is unavailable.'),
+        ):
+            response = self.client.post(reverse('checkout'), {
+                'payment_method': 'paypal',
+                'email': 'buyer@example.com',
+                'phone': '9876543210',
+                'address': '12 Market Road',
+                'city': 'Bhubaneswar',
+                'state': 'Odisha',
+                'zipcode': '751001',
+            })
+
+        self.assertEqual(response.status_code, 503)
+        self.assertContains(response, 'PayPal is unavailable.', status_code=503)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 5)
+        open_cart.refresh_from_db()
+        self.assertEqual(open_cart.orderitem_set.get().quantity, 1)
+        self.assertEqual(Payment.objects.get(method='paypal').status, 'failed')
+
+    @override_settings(
+        PAYPAL_CLIENT_ID='paypal-client',
+        PAYPAL_CLIENT_SECRET='paypal-secret',
+        PAYPAL_API_BASE='https://api-m.sandbox.paypal.com',
+    )
+    def test_paypal_return_captures_and_verifies_payment_before_marking_paid(self):
+        customer = Customer.objects.create(name='Test Buyer', email='buyer@example.com')
+        order = Order.objects.create(
+            customer=customer,
+            complete=True,
+            status='Pending Payment',
+            payment_method='paypal',
+        )
+        payment = Payment.objects.create(
+            order=order,
+            method='paypal',
+            amount=179.0,
+            transaction_id='paypal-test-transaction',
+            gateway_payment_id='PAYPAL-ORDER-123',
+        )
+        capture_response = {
+            'status': 'COMPLETED',
+            'purchase_units': [{
+                'reference_id': payment.transaction_id,
+                'payments': {'captures': [{
+                    'id': 'PAYPAL-CAPTURE-456',
+                    'status': 'COMPLETED',
+                    'amount': {'currency_code': 'INR', 'value': '179.00'},
+                }]},
+            }],
+        }
+
+        with patch('store.views.paypal_api_request', return_value=capture_response) as api_request:
+            response = self.client.get(
+                reverse('paypal_return', args=[order.public_token]),
+                {'token': 'PAYPAL-ORDER-123'},
+            )
+
+        self.assertEqual(response.status_code, 302)
+        api_request.assert_called_once_with(
+            'POST', '/v2/checkout/orders/PAYPAL-ORDER-123/capture', {}
+        )
+        payment.refresh_from_db()
+        order.refresh_from_db()
+        self.assertEqual(payment.status, 'paid')
+        self.assertEqual(payment.customer_reference, 'PAYPAL-CAPTURE-456')
+        self.assertEqual(payment.gateway_payment_id, 'PAYPAL-ORDER-123')
+        self.assertEqual(order.payment_status, 'paid')
+        self.assertEqual(order.status, 'Placed')
+
+    @override_settings(
+        PAYPAL_CLIENT_ID='paypal-client',
+        PAYPAL_CLIENT_SECRET='paypal-secret',
+    )
+    def test_paypal_return_rejects_capture_with_wrong_amount(self):
+        customer = Customer.objects.create(name='Test Buyer', email='buyer@example.com')
+        order = Order.objects.create(
+            customer=customer,
+            complete=True,
+            status='Pending Payment',
+            payment_method='paypal',
+        )
+        payment = Payment.objects.create(
+            order=order,
+            method='paypal',
+            amount=179.0,
+            transaction_id='paypal-amount-check',
+            gateway_payment_id='PAYPAL-ORDER-789',
+        )
+        capture_response = {
+            'status': 'COMPLETED',
+            'purchase_units': [{
+                'reference_id': payment.transaction_id,
+                'payments': {'captures': [{
+                    'id': 'PAYPAL-CAPTURE-WRONG',
+                    'status': 'COMPLETED',
+                    'amount': {'currency_code': 'INR', 'value': '1.00'},
+                }]},
+            }],
+        }
+
+        with patch('store.views.paypal_api_request', return_value=capture_response):
+            response = self.client.get(
+                reverse('paypal_return', args=[order.public_token]),
+                {'token': 'PAYPAL-ORDER-789'},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        payment.refresh_from_db()
+        order.refresh_from_db()
+        self.assertEqual(payment.status, 'pending')
+        self.assertEqual(order.payment_status, 'pending')
 
     @override_settings(PAYU_KEY='merchant-key', PAYU_SALT='merchant-salt')
     def test_payu_callback_verifies_hash_and_marks_order_paid(self):
@@ -707,6 +1055,95 @@ class StorefrontTests(TestCase):
         self.assertEqual(order.payment_status, 'paid')
         self.assertEqual(order.status, 'Placed')
 
+    def test_seller_can_advance_only_owned_fulfillment_and_customer_poll_sees_updates(self):
+        seller = User.objects.create_user(username='fulfillment-seller', password='Password!123')
+        seller_store = SellerStore.objects.create(
+            owner=seller,
+            name='Fulfillment Shop',
+            description='Seller order update testing.',
+        )
+        self.product.seller_store = seller_store
+        self.product.save(update_fields=['seller_store'])
+        self.client.cookies['cart'] = json.dumps({str(self.product.pk): {'quantity': 1}})
+        response = self.client.post(reverse('checkout'), {
+            'payment_method': 'cod',
+            'name': 'Test Buyer',
+            'email': 'buyer@example.com',
+            'phone': '9876543210',
+            'address': '12 Market Road',
+            'city': 'Bhubaneswar',
+            'state': 'Odisha',
+            'zipcode': '751001',
+        })
+        self.assertEqual(response.status_code, 302)
+        order = Order.objects.get(order_number__startswith='AV-')
+        fulfillment = OrderFulfillment.objects.get(order=order, seller_store=seller_store)
+        self.assertEqual(fulfillment.status, 'Placed')
+
+        self.client.force_login(seller)
+        dashboard = self.client.get(reverse('seller_dashboard'))
+        self.assertContains(dashboard, 'Orders &amp; fulfillment')
+        self.assertContains(dashboard, 'Packed')
+        update = {
+            'action': 'update_fulfillment',
+            'fulfillment_id': fulfillment.pk,
+            'shipping_partner': 'Avatar Express',
+            'tracking_number': 'TRACK-123',
+            'tracking_url': 'https://carrier.example/track/TRACK-123',
+        }
+        for status in ('Packed', 'Dispatched', 'Shipped', 'Out for Delivery', 'Delivered'):
+            response = self.client.post(reverse('seller_dashboard'), {
+                **update,
+                'status': status,
+            })
+            self.assertEqual(response.status_code, 302)
+
+        fulfillment.refresh_from_db()
+        order.refresh_from_db()
+        self.assertEqual(fulfillment.status, 'Delivered')
+        self.assertEqual(fulfillment.tracking_number, 'TRACK-123')
+        self.assertEqual(order.status, 'Delivered')
+        self.assertIsNotNone(order.delivered_at)
+        status_response = self.client.get(reverse('order_status', args=[order.public_token]))
+        self.assertEqual(status_response.status_code, 200)
+        self.assertEqual(status_response.json()['fulfillments'][0]['status'], 'Delivered')
+        self.assertEqual(status_response.json()['fulfillments'][0]['tracking_number'], 'TRACK-123')
+
+        other_seller = User.objects.create_user(username='other-fulfillment-seller', password='Password!123')
+        SellerStore.objects.create(
+            owner=other_seller,
+            name='Other Shop',
+            description='Not the owner of this product.',
+        )
+        self.client.force_login(other_seller)
+        response = self.client.post(reverse('seller_dashboard'), {
+            **update,
+            'status': 'Delivered',
+        })
+        self.assertEqual(response.status_code, 404)
+
+    def test_cod_order_invoice_download_returns_pdf_with_signatory(self):
+        self.client.cookies['cart'] = json.dumps({str(self.product.pk): {'quantity': 1}})
+        response = self.client.post(reverse('checkout'), {
+            'payment_method': 'cod',
+            'name': 'Invoice Buyer',
+            'email': 'buyer@example.com',
+            'phone': '9876543210',
+            'address': '12 Market Road',
+            'city': 'Bhubaneswar',
+            'state': 'Odisha',
+            'zipcode': '751001',
+        })
+        self.assertEqual(response.status_code, 302)
+        order = Order.objects.get(order_number__startswith='AV-')
+
+        invoice = self.client.get(reverse('download_invoice', args=[order.public_token]))
+
+        self.assertEqual(invoice.status_code, 200)
+        self.assertEqual(invoice['Content-Type'], 'application/pdf')
+        self.assertIn('Avatar-Invoice-', invoice['Content-Disposition'])
+        self.assertTrue(b''.join(invoice.streaming_content).startswith(b'%PDF-'))
+
     def test_order_cancellation_releases_reserved_inventory(self):
         customer = Customer.objects.create(name='Test Buyer', email='buyer@example.com')
         order = Order.objects.create(
@@ -726,15 +1163,45 @@ class StorefrontTests(TestCase):
 
         response = self.client.post(reverse('order_complete', args=[order.public_token]), {
             'action': 'cancel',
-            'reason': 'Ordered by mistake',
+            'reason': 'ordered_by_mistake',
         })
 
         self.assertEqual(response.status_code, 302)
         order.refresh_from_db()
         self.product.refresh_from_db()
         self.assertEqual(order.status, 'Cancelled')
+        self.assertEqual(order.cancellation_reason, 'Ordered by mistake')
         self.assertEqual(self.product.stock, 5)
         self.assertTrue(order.inventory_released)
+
+    def test_order_cancellation_requires_a_dropdown_reason_and_other_details(self):
+        customer = Customer.objects.create(name='Test Buyer', email='buyer@example.com')
+        order = Order.objects.create(
+            customer=customer,
+            complete=True,
+            status='Placed',
+            payment_method='cod',
+        )
+        details = self.client.get(reverse('order_complete', args=[order.public_token]))
+        self.assertContains(details, 'Why are you cancelling?')
+        self.assertContains(details, 'ordered_by_mistake')
+
+        response = self.client.post(reverse('order_complete', args=[order.public_token]), {
+            'action': 'cancel',
+            'reason': 'other',
+        })
+        self.assertEqual(response.status_code, 302)
+        order.refresh_from_db()
+        self.assertEqual(order.status, 'Placed')
+
+        response = self.client.post(reverse('order_complete', args=[order.public_token]), {
+            'action': 'cancel',
+            'reason': 'other',
+            'reason_detail': 'Found a different item.',
+        })
+        order.refresh_from_db()
+        self.assertEqual(order.status, 'Cancelled')
+        self.assertEqual(order.cancellation_reason, 'Other: Found a different item.')
 
     def test_return_request_requires_recent_delivery(self):
         customer = Customer.objects.create(name='Test Buyer', email='buyer@example.com')
@@ -964,6 +1431,103 @@ class StorefrontTests(TestCase):
         self.assertRedirects(response, reverse('seller_dashboard'))
         self.assertTrue(SellerStore.objects.filter(owner=seller, name='Northside Goods').exists())
 
+    def test_seller_inventory_tabs_and_quick_updates_are_owner_scoped(self):
+        owner = User.objects.create_user(username='inventory-owner', password='Password!123')
+        owner_store = SellerStore.objects.create(
+            owner=owner,
+            name='Owner Shop',
+            description='Owner inventory for everyday products.',
+        )
+        other_user = User.objects.create_user(username='inventory-other', password='Password!123')
+        other_store = SellerStore.objects.create(
+            owner=other_user,
+            name='Other Shop',
+            description='A different seller account.',
+        )
+        own_product = Product.objects.create(
+            seller_store=owner_store,
+            name='Owner Listing',
+            price=25,
+            stock=8,
+            low_stock_threshold=2,
+        )
+        other_product = Product.objects.create(
+            seller_store=other_store,
+            name='Private Other Listing',
+            price=35,
+            stock=4,
+        )
+        self.client.force_login(owner)
+
+        response = self.client.get(reverse('seller_dashboard'), {'listing_status': 'listed'})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Owner Listing')
+        self.assertNotContains(response, 'Private Other Listing')
+        self.assertEqual(response.context['listing_tabs'][0]['count'], 1)
+
+        response = self.client.post(reverse('seller_dashboard'), {
+            'action': 'update_stock',
+            'product_id': own_product.pk,
+            'stock': '2',
+            'listing_status': 'listed',
+        })
+        self.assertEqual(response.status_code, 302)
+        own_product.refresh_from_db()
+        self.assertEqual(own_product.stock, 2)
+        response = self.client.get(reverse('seller_dashboard'), {'listing_status': 'limited'})
+        self.assertContains(response, 'Owner Listing')
+        self.assertContains(response, 'Limited stock')
+
+        response = self.client.post(reverse('seller_dashboard'), {
+            'action': 'update_stock',
+            'product_id': own_product.pk,
+            'stock': '0',
+            'listing_status': 'limited',
+        })
+        own_product.refresh_from_db()
+        self.assertEqual(own_product.stock, 0)
+        response = self.client.get(reverse('seller_dashboard'), {'listing_status': 'out_of_stock'})
+        self.assertContains(response, 'Owner Listing')
+
+        response = self.client.post(reverse('seller_dashboard'), {
+            'action': 'set_visibility',
+            'product_id': own_product.pk,
+            'visibility': 'hidden',
+            'listing_status': 'out_of_stock',
+        })
+        own_product.refresh_from_db()
+        self.assertFalse(own_product.is_active)
+        response = self.client.get(reverse('seller_dashboard'), {'listing_status': 'hidden'})
+        self.assertContains(response, 'Owner Listing')
+        self.assertContains(response, 'List product')
+
+        self.client.post(reverse('seller_dashboard'), {
+            'action': 'set_visibility',
+            'product_id': own_product.pk,
+            'visibility': 'listed',
+            'listing_status': 'hidden',
+        })
+        self.client.post(reverse('seller_dashboard'), {
+            'action': 'update_stock',
+            'product_id': own_product.pk,
+            'stock': '',
+            'listing_status': 'out_of_stock',
+        })
+        own_product.refresh_from_db()
+        self.assertTrue(own_product.is_active)
+        self.assertIsNone(own_product.stock)
+        response = self.client.get(reverse('seller_dashboard'), {'listing_status': 'listed'})
+        self.assertContains(response, 'Owner Listing')
+
+        response = self.client.post(reverse('seller_dashboard'), {
+            'action': 'update_stock',
+            'product_id': other_product.pk,
+            'stock': '0',
+        })
+        self.assertEqual(response.status_code, 404)
+        other_product.refresh_from_db()
+        self.assertEqual(other_product.stock, 4)
+
     def test_seller_can_create_and_edit_only_owned_listings(self):
         seller = User.objects.create_user(username='seller', password='seller-password')
         category = Category.objects.create(name='Accessories', slug='accessories')
@@ -973,6 +1537,9 @@ class StorefrontTests(TestCase):
             description='Useful finds for everyday life.',
         )
         self.client.force_login(seller)
+        editor = self.client.get(reverse('seller_dashboard'))
+        self.assertContains(editor, 'multiple')
+        self.assertContains(editor, 'Product photos (minimum 3)')
         response = self.client.post(reverse('seller_dashboard'), {
             'action': 'save_product',
             'name': 'Canvas Day Bag',
@@ -984,10 +1551,13 @@ class StorefrontTests(TestCase):
             'stock': '8',
             'low_stock_threshold': '2',
             'is_active': 'on',
+            'photos': self.make_product_photos(),
         })
 
         self.assertRedirects(response, reverse('seller_dashboard'))
         product = Product.objects.get(name='Canvas Day Bag')
+        self.assertTrue(product.image)
+        self.assertEqual(product.gallery_images.count(), 2)
         self.assertEqual(product.seller_store, seller_store)
         self.assertTrue(product.is_active)
 
@@ -997,6 +1567,7 @@ class StorefrontTests(TestCase):
         self.assertContains(storefront, 'A roomy everyday bag for carrying books')
         self.assertContains(storefront, seller_store.name)
         details = self.client.get(reverse('product_detail', args=[product.pk]))
+        self.assertEqual(details.content.decode().count('detail-gallery-thumb'), 2)
         self.assertContains(details, '420.00')
         self.assertContains(details, '480.00')
         self.assertContains(details, 'Introductory seller price this week.')
@@ -1047,6 +1618,31 @@ class StorefrontTests(TestCase):
         })
         self.assertEqual(response.status_code, 404)
 
+    def test_seller_product_listing_requires_three_photos(self):
+        seller = User.objects.create_user(username='photo-seller', password='Password!123')
+        SellerStore.objects.create(
+            owner=seller,
+            name='Photo Shop',
+            description='A shop requiring clear product photos.',
+        )
+        category = Category.objects.create(name='Photo Accessories', slug='photo-accessories')
+        self.client.force_login(seller)
+
+        response = self.client.post(reverse('seller_dashboard'), {
+            'action': 'save_product',
+            'name': 'Photo Test Bag',
+            'category': category.pk,
+            'price': '49.99',
+            'description': 'A sufficiently detailed product description for this photo upload test.',
+            'stock': '5',
+            'is_active': 'on',
+            'photos': self.make_product_photos(2),
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'A listing must have at least three product photos.')
+        self.assertFalse(Product.objects.filter(name='Photo Test Bag').exists())
+
     def test_seller_listing_requires_useful_copy_and_finite_price(self):
         seller = User.objects.create_user(username='seller', password='seller-password')
         SellerStore.objects.create(
@@ -1067,6 +1663,7 @@ class StorefrontTests(TestCase):
         self.assertFalse(Product.objects.filter(name='Incomplete listing').exists())
         self.assertContains(response, 'Enter a number.')
         self.assertContains(response, 'Ensure this value has at least 40 characters')
+        self.assertContains(response, 'A listing must have at least three product photos.')
 
     def test_seller_vault_counts_only_its_paid_and_pending_lines(self):
         seller = User.objects.create_user(username='seller', password='seller-password')

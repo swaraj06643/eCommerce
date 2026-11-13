@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import hmac
 import json
@@ -7,7 +8,8 @@ import secrets
 import smtplib
 import uuid
 from datetime import timedelta
-from decimal import Decimal, InvalidOperation
+from io import BytesIO
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from django.conf import settings
 from django.contrib import messages
@@ -22,23 +24,28 @@ from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
 from django.db import transaction
 from django.db.models import F, Q, Sum
-from django.http import HttpResponse, HttpResponseBadRequest, JsonResponse
+from django.http import FileResponse, HttpResponse, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse, reverse_lazy
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
-from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode, urlsplit
+from urllib.request import Request, urlopen
 
 from .models import (
     Category,
     Customer,
     EmailVerification,
     Order,
+    OrderFulfillment,
     OrderItem,
     Payment,
     PhoneOTPRequest,
     Product,
     ProductCoupon,
+    ProductImage,
     ProductVariant,
     ProductVisit,
     SellerStore,
@@ -48,6 +55,12 @@ from .utils import cartData, release_reserved_inventory
 from .postal import PostalLookupError, validate_delivery_location
 from .sms import SMSProviderError, send_phone_otp, verify_phone_otp
 from .forms import ProductCouponForm, SellerProductForm, SellerStoreForm
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from xml.sax.saxutils import escape
 
 
 logger = logging.getLogger(__name__)
@@ -189,6 +202,7 @@ def _line_value(line, name, default=None):
     return line.get(name, default) if isinstance(line, dict) else getattr(line, name, default)
 
 
+@ensure_csrf_cookie
 def store(request):
     data = cartData(request)
     products = Product.objects.filter(is_active=True).filter(
@@ -281,6 +295,7 @@ def store(request):
     return render(request, 'store/store.html', context)
 
 
+@ensure_csrf_cookie
 def product_detail(request, product_id):
     data = cartData(request)
     product = get_object_or_404(
@@ -288,7 +303,7 @@ def product_detail(request, product_id):
             Q(category__active=True) | Q(category__isnull=True)
         ).select_related(
             'category', 'seller_store',
-        ).prefetch_related('variants'),
+        ).prefetch_related('variants', 'gallery_images'),
         id=product_id,
     )
     visitor_key = _session_visitor_key(request)
@@ -341,6 +356,198 @@ STATES = [
     'Lakshadweep', 'Puducherry',
 ]
 
+FULFILLMENT_NEXT_STATUS = {
+    'Placed': 'Packed',
+    'Packed': 'Dispatched',
+    'Dispatched': 'Shipped',
+    'Shipped': 'Out for Delivery',
+    'Out for Delivery': 'Delivered',
+}
+FULFILLMENT_PROGRESS = {
+    status: index for index, status in enumerate((
+        'Placed', 'Packed', 'Dispatched', 'Shipped', 'Out for Delivery', 'Delivered',
+    ))
+}
+
+
+def _cancellation_reason(request):
+    reason_code = request.POST.get('reason', '')
+    reasons = dict(Order.CANCELLATION_REASON_CHOICES)
+    if reason_code not in reasons:
+        return '', 'Choose a cancellation reason.'
+    if reason_code == 'other':
+        detail = request.POST.get('reason_detail', '').strip()
+        if len(detail) < 3:
+            return '', 'Please briefly explain the other cancellation reason.'
+        return f'Other: {detail[:900]}', ''
+    return reasons[reason_code], ''
+
+
+def _sync_order_status(order):
+    if order.status in ('Cancelled', 'Returned', 'Return Requested'):
+        return
+    statuses = list(order.fulfillments.values_list('status', flat=True))
+    active_statuses = [status for status in statuses if status != 'Cancelled']
+    if not active_statuses:
+        return
+    order.status = min(active_statuses, key=lambda status: FULFILLMENT_PROGRESS.get(status, 0))
+    if all(status == 'Delivered' for status in active_statuses):
+        if order.delivered_at is None:
+            order.delivered_at = timezone.now()
+    order.save(update_fields=['status', 'delivered_at'])
+
+
+def _money(value):
+    return Decimal(value).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+
+class PayPalGatewayError(Exception):
+    pass
+
+
+def paypal_api_request(method, path, payload=None):
+    credentials = base64.b64encode(
+        f'{settings.PAYPAL_CLIENT_ID}:{settings.PAYPAL_CLIENT_SECRET}'.encode('utf-8')
+    ).decode('ascii')
+    token_request = Request(
+        f'{settings.PAYPAL_API_BASE}/v1/oauth2/token',
+        data=urlencode({'grant_type': 'client_credentials'}).encode('ascii'),
+        headers={
+            'Authorization': f'Basic {credentials}',
+            'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        method='POST',
+    )
+    try:
+        with urlopen(token_request, timeout=15) as response:
+            access_token = json.loads(response.read().decode('utf-8'))['access_token']
+        request_body = json.dumps(payload).encode('utf-8') if payload is not None else None
+        api_request = Request(
+            f'{settings.PAYPAL_API_BASE}{path}',
+            data=request_body,
+            headers={
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/json',
+                'Prefer': 'return=representation',
+            },
+            method=method,
+        )
+        with urlopen(api_request, timeout=15) as response:
+            return json.loads(response.read().decode('utf-8'))
+    except (HTTPError, URLError, OSError, ValueError, KeyError) as error:
+        logger.warning('PayPal API request failed (%s).', type(error).__name__)
+        raise PayPalGatewayError('PayPal could not process this payment. Please try again.') from error
+
+
+def _paypal_approval_url(paypal_order):
+    approval_url = next((
+        link.get('href') for link in paypal_order.get('links', [])
+        if link.get('rel') in ('approve', 'payer-action')
+    ), '')
+    host = urlsplit(approval_url).hostname
+    api_host = urlsplit(settings.PAYPAL_API_BASE).hostname or ''
+    expected_host = 'www.sandbox.paypal.com' if 'sandbox' in api_host else 'www.paypal.com'
+    if urlsplit(approval_url).scheme != 'https' or host != expected_host:
+        raise PayPalGatewayError('PayPal did not provide a valid approval page.')
+    return approval_url
+
+
+def _restore_order_to_cart(order):
+    if not order.customer_id:
+        return
+    with transaction.atomic():
+        cart_order, _ = Order.objects.select_for_update().get_or_create(
+            customer_id=order.customer_id,
+            complete=False,
+        )
+        for line in order.orderitem_set.all():
+            cart_line = OrderItem.objects.select_for_update().filter(
+                order=cart_order,
+                product_id=line.product_id,
+                variant_id=line.variant_id,
+            ).first()
+            if cart_line:
+                cart_line.quantity += line.quantity
+                cart_line.save(update_fields=['quantity'])
+            else:
+                OrderItem.objects.create(
+                    order=cart_order,
+                    product_id=line.product_id,
+                    variant_id=line.variant_id,
+                    quantity=line.quantity,
+                    unit_price=line.unit_price,
+                    unit_cost=line.unit_cost,
+                    variant_name=line.variant_name,
+                )
+
+
+def _line_checkout_pricing(product, unit_price, quantity, coupon=None):
+    unit_price = _money(unit_price)
+    discount_per_unit = Decimal('0.00')
+    if coupon and product.pk == coupon.product_id:
+        discount_per_unit = _money(
+            unit_price * Decimal(coupon.discount_percent) / Decimal('100')
+        )
+    net_unit_price = max(Decimal('0.00'), unit_price - discount_per_unit)
+    line_subtotal = net_unit_price * int(quantity)
+    line_discount = discount_per_unit * int(quantity)
+    gst_rate = Decimal(str(product.gst_rate or 0))
+    gst_amount = _money(line_subtotal * gst_rate / Decimal('100'))
+    return {
+        'unit_price': net_unit_price,
+        'subtotal': line_subtotal,
+        'coupon_discount': line_discount,
+        'gst_rate': gst_rate,
+        'gst_amount': gst_amount,
+    }
+
+
+def _checkout_price_breakdown(lines, coupon=None):
+    subtotal = Decimal('0.00')
+    coupon_discount = Decimal('0.00')
+    product_gst = Decimal('0.00')
+    display_items = []
+    for line in lines:
+        product = _line_value(line, 'product')
+        variant = _line_value(line, 'variant')
+        unit_price = _line_value(line, 'unit_price')
+        if unit_price is None:
+            unit_price = product.price + (variant.price_adjustment if variant else 0)
+        quantity = int(_line_value(line, 'quantity', 0))
+        priced = _line_checkout_pricing(product, unit_price, quantity, coupon)
+        subtotal += priced['subtotal']
+        coupon_discount += priced['coupon_discount']
+        product_gst += priced['gst_amount']
+        display_items.append({
+            'product': product,
+            'variant_name': _line_value(line, 'variant_name', ''),
+            'quantity': quantity,
+            'unit_price': float(priced['unit_price']),
+            'get_total': float(priced['subtotal']),
+            'coupon_discount': float(priced['coupon_discount']),
+            'gst_rate': priced['gst_rate'],
+            'gst_amount': float(priced['gst_amount']),
+        })
+
+    platform_fee_rate = Decimal(settings.PLATFORM_FEE_PERCENT)
+    platform_fee = _money(subtotal * platform_fee_rate / Decimal('100'))
+    platform_fee_gst_rate = Decimal(settings.PLATFORM_FEE_GST_RATE)
+    platform_fee_gst = _money(platform_fee * platform_fee_gst_rate / Decimal('100'))
+    delivery_fee = Decimal('0.00')
+    total = subtotal + product_gst + platform_fee + platform_fee_gst + delivery_fee
+    return {
+        'items': display_items,
+        'subtotal': float(subtotal),
+        'coupon_discount': float(coupon_discount),
+        'product_gst': float(product_gst),
+        'platform_fee': float(platform_fee),
+        'platform_fee_rate': platform_fee_rate,
+        'platform_fee_gst': float(platform_fee_gst),
+        'delivery_fee': float(delivery_fee),
+        'total': float(total),
+    }
+
+
 def _coupon_for_cart(code, lines):
     code = (code or '').strip().upper()
     if not code:
@@ -352,28 +559,22 @@ def _coupon_for_cart(code, lines):
     ).first()
     if not coupon or coupon.product.seller_store_id != coupon.seller_store_id:
         return None, 0.0
-    eligible_lines = [
-        line for line in lines
-        if getattr(_line_value(line, 'product'), 'id', None) == coupon.product_id
-    ]
-    if not eligible_lines:
+    if not any(
+        getattr(_line_value(line, 'product'), 'id', None) == coupon.product_id
+        for line in lines
+    ):
         return None, 0.0
-    discount = Decimal('0.00')
-    percent = Decimal(coupon.discount_percent)
-    for line in eligible_lines:
-        price = Decimal(str(_line_value(line, 'unit_price', None) or _line_value(line, 'product').price))
-        quantity = int(_line_value(line, 'quantity', 0))
-        discount += (price * quantity * percent / Decimal('100')).quantize(Decimal('0.01'))
-    return coupon, float(discount)
+    return coupon, _checkout_price_breakdown(lines, coupon)['coupon_discount']
 
 
 def _checkout_context(request, error=''):
     data = cartData(request)
     coupon_code = request.session.get('checkout_coupon_code', '')
-    coupon, coupon_discount = _coupon_for_cart(coupon_code, data['items'])
+    coupon, _ = _coupon_for_cart(coupon_code, data['items'])
     coupon_error = ''
     if coupon_code and not coupon:
         coupon_error = 'That coupon is unavailable for the products in your bag.'
+    breakdown = _checkout_price_breakdown(data['items'], coupon)
     available_coupons = ProductCoupon.objects.filter(
         active=True,
         product_id__in=[_line_value(item, 'product').id for item in data['items']],
@@ -381,23 +582,19 @@ def _checkout_context(request, error=''):
     if request.user.is_authenticated:
         customer = get_or_create_customer_for_user(request.user)
         email = customer.email or request.user.email
-        email_verified = bool(email)
     else:
         email = (
             request.POST.get('email', '').strip()
             or request.session.get('verified_checkout_email', '')
             or request.session.get('pending_checkout_email', '')
         )
-        email_verified = EmailVerification.objects.filter(
-            email__iexact=email,
-            verified_at__gte=timezone.now() - timedelta(days=365),
-        ).exists() if email else False
     return {
-        'items': data['items'],
+        'items': breakdown['items'],
         'order': data['order'],
         'cartItems': data['cartItems'],
         'states': STATES,
         'payu_enabled': bool(settings.PAYU_KEY and settings.PAYU_SALT),
+        'paypal_enabled': bool(settings.PAYPAL_CLIENT_ID and settings.PAYPAL_CLIENT_SECRET),
         'upi_id': settings.AVATAR_UPI_ID,
         'checkout_email': email,
         'checkout_name': request.POST.get('name', ''),
@@ -407,10 +604,16 @@ def _checkout_context(request, error=''):
         'checkout_state': request.POST.get('state', ''),
         'checkout_zipcode': request.POST.get('zipcode', ''),
         'selected_payment_method': request.POST.get('payment_method', ''),
-        'email_verified': email_verified,
         'coupon_code': coupon.code if coupon else coupon_code,
-        'coupon_discount': coupon_discount,
-        'checkout_total': max(0, data['order']['get_cart_total'] - coupon_discount),
+        'coupon_discount': breakdown['coupon_discount'],
+        'checkout_items_subtotal': data['order']['get_cart_total'],
+        'checkout_subtotal': breakdown['subtotal'],
+        'product_gst': breakdown['product_gst'],
+        'platform_fee': breakdown['platform_fee'],
+        'platform_fee_rate': breakdown['platform_fee_rate'],
+        'platform_fee_gst': breakdown['platform_fee_gst'],
+        'delivery_fee': breakdown['delivery_fee'],
+        'checkout_total': breakdown['total'],
         'available_coupons': available_coupons,
         'coupon_error': coupon_error,
         'error': error,
@@ -566,10 +769,14 @@ def _create_order(request, payment_method):
     coupon, _ = _coupon_for_cart(coupon_code, lines)
     if coupon_code and not coupon:
         raise ValueError('That coupon is unavailable for the products in your bag.')
-    if payment_method not in ('cod', 'upi_manual', 'payu'):
+    if payment_method not in ('cod', 'upi_manual', 'payu', 'paypal'):
         raise ValueError('Choose a valid payment method.')
     if payment_method == 'payu' and not (settings.PAYU_KEY and settings.PAYU_SALT):
-        raise ValueError('Online payment is not configured yet. Choose another available method.')
+        raise ValueError('PayU is not configured yet. Choose another available method.')
+    if payment_method == 'paypal' and not (
+        settings.PAYPAL_CLIENT_ID and settings.PAYPAL_CLIENT_SECRET
+    ):
+        raise ValueError('PayPal is not configured yet. Choose another available method.')
     if payment_method == 'upi_manual' and not settings.AVATAR_UPI_ID:
         raise ValueError('Manual UPI payment is not configured.')
 
@@ -582,15 +789,11 @@ def _create_order(request, payment_method):
         except ValidationError:
             raise ValueError('Add a valid email address to your profile before ordering.')
         if customer.email and customer.email.casefold() != email.casefold():
-            raise ValueError('Use the email address saved in your profile, or update and verify it first.')
-        email_verified = bool(
-            customer.email
-            and customer.email.casefold() == email.casefold()
-        )
+            raise ValueError('Use the email address saved in your profile, or update your profile first.')
     else:
         customer = None
         name = request.POST.get('name', '').strip()
-        email = request.POST.get('email', '').strip() or request.session.get('verified_checkout_email', '')
+        email = request.POST.get('email', '').strip()
         if not name or not email:
             raise ValueError('Enter your name and email address.')
         try:
@@ -605,13 +808,6 @@ def _create_order(request, payment_method):
     if not 10 <= len(digits) <= 15 or len(set(digits)) == 1:
         raise ValueError('Enter a valid contact phone number.')
 
-    if not request.user.is_authenticated:
-        email_verified = EmailVerification.objects.filter(
-            email__iexact=email,
-            verified_at__gte=timezone.now() - timedelta(days=365),
-        ).exists()
-    if not email_verified:
-        raise ValueError('Verify your email address using the link we sent before placing this order.')
 
     address = request.POST.get('address', '').strip()
     city = request.POST.get('city', '').strip()
@@ -662,7 +858,10 @@ def _create_order(request, payment_method):
         order.order_number = f'AV-{timezone.now():%Y%m%d}-{order.id:06d}'
         order.save(update_fields=['order_number'])
 
-        total = 0
+        subtotal = Decimal('0.00')
+        product_gst = Decimal('0.00')
+        total_coupon_discount = Decimal('0.00')
+        seller_store_ids = set()
         for line in lines:
             cart_product = _line_value(line, 'product')
             product_id = cart_product.id
@@ -671,6 +870,8 @@ def _create_order(request, payment_method):
                 product.category_id and not product.category.active
             ):
                 raise ValueError(f'{product.name} is no longer available.')
+            if product.seller_store_id:
+                seller_store_ids.add(product.seller_store_id)
             cart_variant = _line_value(line, 'variant')
             variant_id = cart_variant.id if cart_variant else None
             variant = None
@@ -697,26 +898,32 @@ def _create_order(request, payment_method):
                     Product.objects.filter(pk=product.pk).update(stock=F('stock') - quantity)
 
             unit_price = product.price + (variant.price_adjustment if variant else 0)
-            item_coupon_discount = 0.0
-            if coupon and product.pk == coupon.product_id:
-                discount_per_unit = (
-                    Decimal(str(unit_price)) * Decimal(coupon.discount_percent) / Decimal('100')
-                ).quantize(Decimal('0.01'))
-                item_coupon_discount = float(discount_per_unit * quantity)
-                unit_price = float(Decimal(str(unit_price)) - discount_per_unit)
+            pricing = _line_checkout_pricing(product, unit_price, quantity, coupon)
+            item_coupon_discount = float(pricing['coupon_discount'])
             OrderItem.objects.create(
                 order=order,
                 product=product,
                 variant=variant,
                 quantity=quantity,
-                unit_price=unit_price,
+                unit_price=float(pricing['unit_price']),
                 unit_cost=product.cost_price,
                 variant_name=variant.display_value if variant else '',
                 stock_source=stock_source,
                 coupon_code=coupon.code if item_coupon_discount else '',
                 coupon_discount=item_coupon_discount,
+                gst_rate=pricing['gst_rate'],
+                gst_amount=float(pricing['gst_amount']),
             )
-            total += unit_price * quantity
+            subtotal += pricing['subtotal']
+            product_gst += pricing['gst_amount']
+            total_coupon_discount += pricing['coupon_discount']
+
+        for seller_store_id in seller_store_ids:
+            OrderFulfillment.objects.create(
+                order=order,
+                seller_store_id=seller_store_id,
+                status='Placed',
+            )
 
         if request.user.is_authenticated:
             open_cart = Order.objects.filter(customer=customer, complete=False).first()
@@ -733,11 +940,24 @@ def _create_order(request, payment_method):
                 zipcode=zipcode,
             )
 
-        if coupon:
-            order.coupon_discount = sum(
-                item.coupon_discount for item in order.orderitem_set.all()
-            )
-            order.save(update_fields=['coupon_discount'])
+        platform_fee_rate = Decimal(settings.PLATFORM_FEE_PERCENT)
+        platform_fee = _money(subtotal * platform_fee_rate / Decimal('100'))
+        platform_fee_gst = _money(
+            platform_fee * Decimal(settings.PLATFORM_FEE_GST_RATE) / Decimal('100')
+        )
+        delivery_fee = Decimal('0.00')
+        total_amount = subtotal + product_gst + platform_fee + platform_fee_gst + delivery_fee
+        order.coupon_discount = float(total_coupon_discount)
+        order.gst_amount = float(product_gst)
+        order.platform_fee = float(platform_fee)
+        order.platform_fee_gst = float(platform_fee_gst)
+        order.platform_fee_rate = platform_fee_rate
+        order.delivery_fee = float(delivery_fee)
+        order.total_amount = float(total_amount)
+        order.save(update_fields=[
+            'coupon_discount', 'gst_amount', 'platform_fee', 'platform_fee_gst',
+            'platform_fee_rate', 'delivery_fee', 'total_amount',
+        ])
         if not request.user.is_authenticated:
             request.session.pop('pending_checkout_email', None)
             request.session.pop('verified_checkout_email', None)
@@ -746,7 +966,7 @@ def _create_order(request, payment_method):
         payment = Payment.objects.create(
             order=order,
             method=payment_method,
-            amount=total,
+            amount=float(total_amount),
             transaction_id=uuid.uuid4().hex,
             status='pending',
         )
@@ -805,6 +1025,49 @@ def checkout(request):
             'callback_url': callback_url,
             'order': order,
         })
+    elif payment.method == 'paypal':
+        try:
+            paypal_order = paypal_api_request('POST', '/v2/checkout/orders', {
+                'intent': 'CAPTURE',
+                'purchase_units': [{
+                    'reference_id': payment.transaction_id,
+                    'custom_id': str(order.public_token),
+                    'description': f'Avatar Store order {order.order_number}',
+                    'amount': {
+                        'currency_code': 'INR',
+                        'value': f'{payment.amount:.2f}',
+                    },
+                }],
+                'application_context': {
+                    'return_url': request.build_absolute_uri(
+                        reverse('paypal_return', args=[order.public_token])
+                    ),
+                    'cancel_url': request.build_absolute_uri(
+                        reverse('paypal_cancel', args=[order.public_token])
+                    ),
+                    'user_action': 'PAY_NOW',
+                },
+            })
+            if not paypal_order.get('id'):
+                raise PayPalGatewayError('PayPal did not create a payment session.')
+            payment.gateway_payment_id = paypal_order['id']
+            payment.save(update_fields=['gateway_payment_id', 'updated_at'])
+            response = redirect(_paypal_approval_url(paypal_order))
+        except PayPalGatewayError as error:
+            with transaction.atomic():
+                payment.status = 'failed'
+                payment.save(update_fields=['status', 'updated_at'])
+                order.payment_status = 'failed'
+                order.status = 'Cancelled'
+                release_reserved_inventory(order)
+                order.save(update_fields=['payment_status', 'status'])
+            _restore_order_to_cart(order)
+            return render(
+                request,
+                'store/checkout.html',
+                _checkout_context(request, str(error)),
+                status=503,
+            )
     elif payment.method == 'upi_manual':
         response = redirect('order_complete', token=order.public_token)
     else:
@@ -878,9 +1141,84 @@ def payu_return(request):
     return redirect('order_complete', token=payment.order.public_token)
 
 
+def paypal_return(request, token):
+    order = get_object_or_404(Order, public_token=token)
+    payment = get_object_or_404(Payment, order=order, method='paypal')
+    paypal_order_id = request.GET.get('token', '')
+    if not paypal_order_id or not hmac.compare_digest(
+        paypal_order_id, payment.gateway_payment_id
+    ):
+        return HttpResponseBadRequest('PayPal payment reference did not match this order.')
+    if payment.status == 'paid':
+        return redirect('order_complete', token=order.public_token)
+    if payment.status != 'pending':
+        return redirect('order_complete', token=order.public_token)
+
+    try:
+        result = paypal_api_request(
+            'POST', f'/v2/checkout/orders/{paypal_order_id}/capture', {}
+        )
+    except PayPalGatewayError as error:
+        messages.error(request, str(error))
+        return redirect('order_complete', token=order.public_token)
+
+    purchase_units = result.get('purchase_units', [])
+    purchase_unit = purchase_units[0] if purchase_units else {}
+    captures = purchase_unit.get('payments', {}).get('captures', [])
+    capture = captures[0] if captures else {}
+    captured_amount = capture.get('amount', {})
+    if (
+        result.get('status') != 'COMPLETED'
+        or capture.get('status') != 'COMPLETED'
+        or purchase_unit.get('reference_id') != payment.transaction_id
+        or captured_amount.get('currency_code') != 'INR'
+        or captured_amount.get('value') != f'{payment.amount:.2f}'
+        or not capture.get('id')
+    ):
+        return HttpResponseBadRequest('PayPal payment verification failed.')
+
+    with transaction.atomic():
+        payment = Payment.objects.select_for_update().get(pk=payment.pk)
+        order = Order.objects.select_for_update().get(pk=order.pk)
+        if payment.status == 'pending':
+            payment.status = 'paid'
+            payment.customer_reference = capture['id']
+            order.payment_status = 'paid'
+            order.transaction_id = payment.transaction_id
+            if order.status == 'Pending Payment':
+                order.status = 'Placed'
+            order.save(update_fields=['payment_status', 'transaction_id', 'status'])
+            payment.save(update_fields=['status', 'customer_reference', 'updated_at'])
+    return redirect('order_complete', token=order.public_token)
+
+
+def paypal_cancel(request, token):
+    order = get_object_or_404(Order, public_token=token)
+    with transaction.atomic():
+        order = Order.objects.select_for_update().get(pk=order.pk)
+        payment = Payment.objects.select_for_update().filter(
+            order=order,
+            method='paypal',
+            status='pending',
+        ).first()
+        if payment:
+            payment.status = 'failed'
+            payment.save(update_fields=['status', 'updated_at'])
+            order.payment_status = 'failed'
+            if order.status == 'Pending Payment':
+                order.status = 'Cancelled'
+                release_reserved_inventory(order)
+            order.save(update_fields=['payment_status', 'status'])
+    messages.info(request, 'PayPal checkout was cancelled. No payment was recorded.')
+    return redirect('order_complete', token=order.public_token)
+
+
 def order_complete(request, token):
     order = get_object_or_404(
-        Order.objects.select_related('customer').prefetch_related('orderitem_set__product', 'orderitem_set__variant', 'shippingaddress_set'),
+        Order.objects.select_related('customer').prefetch_related(
+            'orderitem_set__product', 'orderitem_set__variant',
+            'shippingaddress_set', 'fulfillments__seller_store',
+        ),
         public_token=token,
     )
     payment = Payment.objects.filter(order=order).first()
@@ -902,6 +1240,11 @@ def order_complete(request, token):
     if request.method == 'POST' and request.POST.get('action'):
         action = request.POST.get('action')
         reason = request.POST.get('reason', '').strip()[:1000]
+        if action == 'cancel':
+            reason, reason_error = _cancellation_reason(request)
+            if reason_error:
+                messages.error(request, reason_error)
+                return redirect('order_complete', token=token)
         with transaction.atomic():
             order = Order.objects.select_for_update().get(pk=order.pk)
             if action == 'cancel' and order.status in ('Pending Payment', 'Placed', 'Packed'):
@@ -909,6 +1252,9 @@ def order_complete(request, token):
                 order.cancellation_reason = reason
                 release_reserved_inventory(order)
                 order.save(update_fields=['status', 'cancellation_reason'])
+                OrderFulfillment.objects.filter(order=order).update(
+                    status='Cancelled', updated_at=timezone.now(),
+                )
                 messages.success(request, 'Cancellation recorded. Paid orders require staff refund processing.')
             elif (
                 action == 'return'
@@ -928,6 +1274,11 @@ def order_complete(request, token):
         'order': order,
         'payment': payment,
         'items': order.orderitem_set.select_related('product', 'variant').all(),
+        'fulfillments': order.fulfillments.select_related('seller_store').all(),
+        'invoice_available': (
+                    order.payment_status == 'paid'
+                    or (order.payment_method == 'cod' and order.status not in ('Cancelled', 'Returned'))
+                ),
         'cartItems': cartData(request)['cartItems'],
         'upi_id': settings.AVATAR_UPI_ID,
         'upi_uri': (
@@ -935,6 +1286,149 @@ def order_complete(request, token):
             f'&am={payment.amount:.2f}&cu=INR&tn={order.order_number}'
         ) if payment and payment.method == 'upi_manual' else '',
     })
+
+
+def order_status(request, token):
+    if request.method != 'GET':
+        return HttpResponseBadRequest('GET required.')
+    order = get_object_or_404(
+        Order.objects.prefetch_related('fulfillments__seller_store'),
+        public_token=token,
+        complete=True,
+    )
+    return JsonResponse({
+        'order_status': order.status,
+        'fulfillments': [{
+            'id': fulfillment.pk,
+            'seller': fulfillment.seller_store.name,
+            'status': fulfillment.get_status_display(),
+            'updated_at': fulfillment.updated_at.isoformat(),
+            'shipping_partner': fulfillment.shipping_partner,
+            'tracking_number': fulfillment.tracking_number,
+            'tracking_url': fulfillment.tracking_url,
+        } for fulfillment in order.fulfillments.all()],
+    })
+
+
+def download_invoice(request, token):
+    if request.method != 'GET':
+        return HttpResponseBadRequest('GET required.')
+    order = get_object_or_404(
+        Order.objects.select_related('customer').prefetch_related(
+            'orderitem_set__product__seller_store',
+            'orderitem_set__variant',
+            'shippingaddress_set',
+        ),
+        public_token=token,
+        complete=True,
+    )
+    cod_order_is_active = order.payment_method == 'cod' and order.status not in ('Cancelled', 'Returned')
+    if order.payment_status != 'paid' and not cod_order_is_active:
+        return HttpResponseBadRequest('The invoice is available after payment confirmation.')
+
+    output = BytesIO()
+    document = SimpleDocTemplate(
+        output,
+        pagesize=A4,
+        leftMargin=16 * mm,
+        rightMargin=16 * mm,
+        topMargin=16 * mm,
+        bottomMargin=16 * mm,
+        title=f'Avatar Store Invoice {order.order_number}',
+        author='Avatar Store',
+    )
+    styles = getSampleStyleSheet()
+
+    def pdf_text(value):
+        return str(value or '').encode('cp1252', 'replace').decode('cp1252')
+
+    story = [
+        Paragraph('AVATAR STORE', styles['Title']),
+        Paragraph('Order invoice', styles['Heading2']),
+        Paragraph(f'Invoice / order number: {escape(order.order_number or str(order.pk))}', styles['Normal']),
+        Paragraph(f'Order date: {timezone.localtime(order.date_order):%d %b %Y, %I:%M %p}', styles['Normal']),
+        Paragraph(f'Customer: {escape(pdf_text(order.customer.name if order.customer else "Guest customer"))}', styles['Normal']),
+        Spacer(1, 5 * mm),
+    ]
+    address = order.shippingaddress_set.first()
+    if address:
+        address_text = ', '.join(filter(None, [
+            address.address, address.city, address.state, address.zipcode,
+        ]))
+        story.extend([
+            Paragraph('Delivery address', styles['Heading3']),
+            Paragraph(escape(pdf_text(address_text)), styles['Normal']),
+            Spacer(1, 4 * mm),
+        ])
+
+    rows = [[
+        Paragraph('<b>Product / seller</b>', styles['Normal']),
+        Paragraph('<b>Qty</b>', styles['Normal']),
+        Paragraph('<b>Rate</b>', styles['Normal']),
+        Paragraph('<b>GST</b>', styles['Normal']),
+        Paragraph('<b>Amount</b>', styles['Normal']),
+    ]]
+    for item in order.orderitem_set.all():
+        product_name = item.product.name if item.product else 'Product'
+        seller_name = item.product.seller_store.name if item.product and item.product.seller_store else 'Avatar Store'
+        if item.variant_name:
+            product_name = f'{product_name} ({item.variant_name})'
+        rows.append([
+            Paragraph(f'{escape(pdf_text(product_name))}<br/><font size="8">Seller: {escape(pdf_text(seller_name))}</font>', styles['Normal']),
+            str(item.quantity or 0),
+            f'INR {item.unit_price or (item.product.price if item.product else 0):.2f}',
+            f'INR {item.gst_amount:.2f}',
+            f'INR {item.get_total:.2f}',
+        ])
+    table = Table(rows, colWidths=[73 * mm, 14 * mm, 31 * mm, 25 * mm, 35 * mm], repeatRows=1)
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#29211f')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('GRID', (0, 0), (-1, -1), .35, colors.HexColor('#d9d1cc')),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('ALIGN', (1, 1), (-1, -1), 'RIGHT'),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#faf7f5')]),
+        ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+        ('TOPPADDING', (0, 0), (-1, -1), 7),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 7),
+    ]))
+    story.extend([table, Spacer(1, 5 * mm)])
+    totals = [
+        ['Items subtotal', f'INR {order.get_items_subtotal:.2f}'],
+    ]
+    if order.coupon_discount:
+        totals.append(['Seller coupon discount', f'- INR {order.coupon_discount:.2f}'])
+    totals.extend([
+        ['GST on products', f'INR {order.gst_amount:.2f}'],
+        [f'Platform fee ({order.platform_fee_rate}%)', f'INR {order.platform_fee:.2f}'],
+        ['GST on platform fee', f'INR {order.platform_fee_gst:.2f}'],
+        ['Delivery', 'FREE'],
+        ['Total paid / payable', f'INR {order.get_total_amount:.2f}'],
+    ])
+    totals_table = Table(totals, colWidths=[145 * mm, 33 * mm], hAlign='RIGHT')
+    totals_table.setStyle(TableStyle([
+        ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
+        ('LINEABOVE', (0, -1), (-1, -1), 1, colors.HexColor('#29211f')),
+        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+    ]))
+    story.extend([
+        totals_table,
+        Spacer(1, 12 * mm),
+        Paragraph('Digitally issued by Avatar Store', styles['Normal']),
+        Paragraph(f'Authorized signatory: {escape(pdf_text(settings.INVOICE_AUTHORIZED_SIGNATORY))}', styles['Normal']),
+        Paragraph('This document was generated electronically; no handwritten signature is required.', styles['Italic']),
+    ])
+    document.build(story)
+    output.seek(0)
+    return FileResponse(
+        output,
+        as_attachment=True,
+        filename=f'Avatar-Invoice-{order.order_number or order.pk}.pdf',
+        content_type='application/pdf',
+    )
 
 
 @login_required(login_url='login')
@@ -1015,6 +1509,16 @@ def account_settings(request):
     })
 
 
+def _seller_dashboard_redirect(request):
+    selected_status = request.POST.get('listing_status', 'all')
+    if selected_status not in ('all', 'listed', 'limited', 'out_of_stock', 'hidden'):
+        selected_status = 'all'
+    url = reverse('seller_dashboard')
+    if selected_status != 'all':
+        url = f'{url}?listing_status={selected_status}'
+    return redirect(url)
+
+
 @login_required(login_url='seller_login')
 def seller_dashboard(request):
     seller_store = SellerStore.objects.filter(owner=request.user).first()
@@ -1050,11 +1554,95 @@ def seller_dashboard(request):
                 instance=product,
             )
             if product_form.is_valid():
+                uploaded_photos = list(product_form.cleaned_data.get('photos') or [])
                 product = product_form.save(commit=False)
                 product.seller_store = seller_store
+                if uploaded_photos and not product.image:
+                    product.image = uploaded_photos.pop(0)
                 product.save()
-                messages.success(request, 'Your product listing was saved.')
+                next_sort_order = product.gallery_images.count()
+                for offset, photo in enumerate(uploaded_photos):
+                    ProductImage.objects.create(
+                        product=product,
+                        image=photo,
+                        sort_order=next_sort_order + offset,
+                    )
+                messages.success(request, 'Your product listing and photos were saved.')
                 return redirect('seller_dashboard')
+        elif action == 'update_fulfillment' and seller_store:
+            fulfillment_id = request.POST.get('fulfillment_id', '').strip()
+            if not fulfillment_id.isdigit():
+                return HttpResponseBadRequest('Invalid seller order update.')
+            with transaction.atomic():
+                fulfillment = get_object_or_404(
+                    OrderFulfillment.objects.select_for_update(),
+                    pk=fulfillment_id,
+                    seller_store=seller_store,
+                )
+                order = Order.objects.select_for_update().get(pk=fulfillment.order_id)
+                owns_order_line = OrderItem.objects.filter(
+                    order=order,
+                    product__seller_store=seller_store,
+                ).exists()
+                if not owns_order_line:
+                    return HttpResponseBadRequest('This seller does not own a product in the order.')
+                if order.status in ('Pending Payment', 'Cancelled', 'Returned', 'Return Requested'):
+                    messages.error(request, 'This order is not ready for seller fulfillment updates.')
+                    return redirect('seller_dashboard')
+
+                requested_status = request.POST.get('status', '')
+                allowed_statuses = (fulfillment.status, FULFILLMENT_NEXT_STATUS.get(fulfillment.status))
+                if requested_status not in allowed_statuses:
+                    messages.error(request, 'Update the shipment one step at a time.')
+                    return redirect('seller_dashboard')
+
+                tracking_url = request.POST.get('tracking_url', '').strip()
+                if tracking_url:
+                    parsed_tracking_url = urlsplit(tracking_url)
+                    if parsed_tracking_url.scheme != 'https' or not parsed_tracking_url.hostname:
+                        messages.error(request, 'Tracking links must use a valid HTTPS URL.')
+                        return redirect('seller_dashboard')
+                fulfillment.status = requested_status
+                fulfillment.shipping_partner = request.POST.get('shipping_partner', '').strip()[:100]
+                fulfillment.tracking_number = request.POST.get('tracking_number', '').strip()[:100]
+                fulfillment.tracking_url = tracking_url
+                if requested_status == 'Delivered' and fulfillment.delivered_at is None:
+                    fulfillment.delivered_at = timezone.now()
+                fulfillment.save(update_fields=[
+                    'status', 'shipping_partner', 'tracking_number',
+                    'tracking_url', 'delivered_at', 'updated_at',
+                ])
+                _sync_order_status(order)
+            messages.success(request, f'Shipment status for order {order.order_number} was updated.')
+            return redirect('seller_dashboard')
+        elif action == 'update_stock' and seller_store:
+            product_id = request.POST.get('product_id', '').strip()
+            stock_value = request.POST.get('stock', '').strip()
+            if not product_id.isdigit():
+                return HttpResponseBadRequest('Invalid product listing.')
+            if stock_value and (not re.fullmatch(r'[0-9]+', stock_value) or int(stock_value) > 2147483647):
+                messages.error(request, 'Enter a whole-number stock quantity, or leave it blank for untracked stock.')
+                return _seller_dashboard_redirect(request)
+            product = get_object_or_404(Product, pk=product_id, seller_store=seller_store)
+            with transaction.atomic():
+                product = Product.objects.select_for_update().get(
+                    pk=product.pk,
+                    seller_store=seller_store,
+                )
+                product.stock = int(stock_value) if stock_value else None
+                product.save(update_fields=['stock'])
+            messages.success(request, f'Stock for {product.name} was updated.')
+            return _seller_dashboard_redirect(request)
+        elif action == 'set_visibility' and seller_store:
+            product_id = request.POST.get('product_id', '').strip()
+            visibility = request.POST.get('visibility', '')
+            if not product_id.isdigit() or visibility not in ('listed', 'hidden'):
+                return HttpResponseBadRequest('Invalid listing visibility update.')
+            product = get_object_or_404(Product, pk=product_id, seller_store=seller_store)
+            product.is_active = visibility == 'listed'
+            product.save(update_fields=['is_active'])
+            messages.success(request, f'{product.name} is now {visibility}.')
+            return _seller_dashboard_redirect(request)
         elif action == 'save_coupon' and seller_store:
             product_id = request.POST.get('product_id', '').strip()
             if not product_id.isdigit():
@@ -1107,9 +1695,49 @@ def seller_dashboard(request):
             'editing_product_id': editing_product_id,
         })
 
-    products = seller_store.products.select_related('category').prefetch_related(
+    all_products = seller_store.products.select_related('category').prefetch_related(
         'coupons',
-    ).order_by('name')
+    )
+    listing_status = request.GET.get('listing_status', 'all')
+    if listing_status not in ('all', 'listed', 'limited', 'out_of_stock', 'hidden'):
+        listing_status = 'all'
+    product_count = all_products.count()
+    status_counts = {
+        'all': product_count,
+        'listed': all_products.filter(is_active=True).filter(
+            Q(stock__isnull=True) | Q(stock__gt=F('low_stock_threshold')),
+        ).count(),
+        'limited': all_products.filter(
+            is_active=True,
+            stock__gt=0,
+            stock__lte=F('low_stock_threshold'),
+        ).count(),
+        'out_of_stock': all_products.filter(is_active=True, stock=0).count(),
+        'hidden': all_products.filter(is_active=False).count(),
+    }
+    listing_tabs = [
+        {'key': 'all', 'label': 'All listings', 'count': status_counts['all']},
+        {'key': 'listed', 'label': 'Listed', 'count': status_counts['listed']},
+        {'key': 'limited', 'label': 'Limited stock', 'count': status_counts['limited']},
+        {'key': 'out_of_stock', 'label': 'Out of stock', 'count': status_counts['out_of_stock']},
+        {'key': 'hidden', 'label': 'Hidden', 'count': status_counts['hidden']},
+    ]
+    products = all_products
+    if listing_status == 'listed':
+        products = products.filter(is_active=True).filter(
+            Q(stock__isnull=True) | Q(stock__gt=F('low_stock_threshold')),
+        )
+    elif listing_status == 'limited':
+        products = products.filter(
+            is_active=True,
+            stock__gt=0,
+            stock__lte=F('low_stock_threshold'),
+        )
+    elif listing_status == 'out_of_stock':
+        products = products.filter(is_active=True, stock=0)
+    elif listing_status == 'hidden':
+        products = products.filter(is_active=False)
+    products = products.order_by('name')
     seller_lines = list(
         OrderItem.objects.filter(
             product__seller_store=seller_store,
@@ -1135,6 +1763,39 @@ def seller_dashboard(request):
         ):
             awaiting_payment += line_total
 
+    fulfillment_by_order = {
+        fulfillment.order_id: fulfillment
+        for fulfillment in OrderFulfillment.objects.filter(
+            order_id__in=grouped_orders,
+            seller_store=seller_store,
+        )
+    }
+    fulfillment_labels = dict(OrderFulfillment.STATUS_CHOICES)
+    for order_id, group in grouped_orders.items():
+        fulfillment = fulfillment_by_order.get(order_id)
+        group['fulfillment'] = fulfillment
+        group['fulfillment_status_options'] = []
+        if fulfillment:
+            group['fulfillment_status_options'].append((
+                fulfillment.status,
+                fulfillment_labels[fulfillment.status],
+            ))
+            next_status = FULFILLMENT_NEXT_STATUS.get(fulfillment.status)
+            if next_status:
+                group['fulfillment_status_options'].append((
+                    next_status,
+                    fulfillment_labels[next_status],
+                ))
+            group['can_update_fulfillment'] = (
+                group['order'].status not in (
+                    'Pending Payment', 'Cancelled', 'Returned', 'Return Requested',
+                )
+            )
+    open_fulfillment_count = sum(
+        1 for group in grouped_orders.values()
+        if group['fulfillment'] and group['fulfillment'].status not in ('Delivered', 'Cancelled')
+    )
+
     return render(request, 'store/seller_dashboard.html', {
         'cartItems': cart_items,
         'seller_store': seller_store,
@@ -1142,15 +1803,15 @@ def seller_dashboard(request):
         'product_form': product_form,
         'editing_product_id': editing_product_id,
         'products': products,
-        'product_count': products.count(),
-        'active_listing_count': products.filter(is_active=True).count(),
-        'low_stock_count': products.filter(
-            stock__isnull=False,
-            stock__lte=F('low_stock_threshold'),
-        ).count(),
+        'product_count': product_count,
+        'active_listing_count': status_counts['listed'] + status_counts['limited'] + status_counts['out_of_stock'],
+        'low_stock_count': status_counts['limited'],
+        'listing_status': listing_status,
+        'listing_tabs': listing_tabs,
         'paid_sales': paid_sales,
         'awaiting_payment': awaiting_payment,
         'seller_orders': list(grouped_orders.values())[:12],
+                'open_fulfillment_count': open_fulfillment_count,
     })
 
 
@@ -1175,13 +1836,19 @@ def order_action(request, order_id):
         action = request.POST.get('action')
         reason = request.POST.get('reason', '').strip()
         if action == 'cancel':
-            if order.status not in ('Pending Payment', 'Placed', 'Packed'):
+            reason, reason_error = _cancellation_reason(request)
+            if reason_error:
+                messages.error(request, reason_error)
+            elif order.status not in ('Pending Payment', 'Placed', 'Packed'):
                 messages.error(request, 'This order can no longer be cancelled online.')
             else:
                 order.status = 'Cancelled'
-                order.cancellation_reason = reason[:1000]
+                order.cancellation_reason = reason
                 release_reserved_inventory(order)
                 order.save(update_fields=['status', 'cancellation_reason'])
+                OrderFulfillment.objects.filter(order=order).update(
+                    status='Cancelled', updated_at=timezone.now(),
+                )
                 messages.success(request, 'Your cancellation request was recorded. Paid orders require staff refund processing.')
         elif action == 'return':
             within_return_window = (
@@ -1420,31 +2087,46 @@ def updateItem(request):
     if action not in ('add', 'remove'):
         return JsonResponse({'error': 'Invalid bag action.'}, status=400)
 
-    product = get_object_or_404(Product, pk=product_id)
-    variant = None
-    if variant_id:
-        variant = get_object_or_404(ProductVariant, pk=variant_id, product=product, active=True)
-    elif product.variants.filter(active=True).exists():
-        return JsonResponse({'error': 'Choose a product option first.'}, status=400)
+    with transaction.atomic():
+        product = get_object_or_404(
+            Product.objects.select_for_update().filter(is_active=True).filter(
+                Q(category__active=True) | Q(category__isnull=True)
+            ),
+            pk=product_id,
+        )
+        variant = None
+        if variant_id:
+            variant = get_object_or_404(
+                ProductVariant.objects.select_for_update(),
+                pk=variant_id,
+                product=product,
+                active=True,
+            )
+        elif product.variants.filter(active=True).exists():
+            return JsonResponse({'error': 'Choose a product option first.'}, status=400)
 
-    customer = get_or_create_customer_for_user(request.user)
-    order, _ = Order.objects.get_or_create(customer=customer, complete=False)
-    item, created = OrderItem.objects.get_or_create(order=order, product=product, variant=variant)
-    if action == 'add':
-        inventory = variant.stock if variant and variant.stock is not None else product.stock
-        if inventory is not None and item.quantity + 1 > inventory:
-            if created:
-                item.delete()
-            return JsonResponse({'error': 'There is not enough stock for another unit.'}, status=409)
-        item.quantity += 1
-    else:
-        item.quantity -= 1
-    if item.quantity <= 0:
-        item.delete()
-    else:
-        item.unit_price = product.price + (variant.price_adjustment if variant else 0)
-        item.variant_name = variant.display_value if variant else ''
-        item.save(update_fields=['quantity', 'unit_price', 'variant_name'])
+        customer = get_or_create_customer_for_user(request.user)
+        order, _ = Order.objects.get_or_create(customer=customer, complete=False)
+        item, created = OrderItem.objects.get_or_create(
+            order=order,
+            product=product,
+            variant=variant,
+        )
+        if action == 'add':
+            inventory = variant.stock if variant and variant.stock is not None else product.stock
+            if inventory is not None and item.quantity + 1 > inventory:
+                if created:
+                    item.delete()
+                return JsonResponse({'error': 'There is not enough stock for another unit.'}, status=409)
+            item.quantity += 1
+        else:
+            item.quantity -= 1
+        if item.quantity <= 0:
+            item.delete()
+        else:
+            item.unit_price = product.price + (variant.price_adjustment if variant else 0)
+            item.variant_name = variant.display_value if variant else ''
+            item.save(update_fields=['quantity', 'unit_price', 'variant_name'])
     return JsonResponse({'success': True})
 
 

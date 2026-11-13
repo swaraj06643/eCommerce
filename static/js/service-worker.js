@@ -1,8 +1,11 @@
-var CACHE_NAME = 'avatar-store-v1';
+var CACHE_NAME = 'avatar-store-v4';
 var APP_ASSETS = [
     '/static/manifest.webmanifest',
     '/static/css/main.css',
     '/static/js/cart.js',
+    '/static/js/product-detail.js',
+    '/static/js/checkout.js',
+    '/static/js/order-status.js',
     '/static/js/splash.js',
     '/static/js/pwa.js',
     '/static/images/avatar-mark.svg',

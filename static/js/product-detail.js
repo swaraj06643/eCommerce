@@ -47,6 +47,13 @@
         });
     }
 
+    const galleryMain = document.querySelector('[data-gallery-main]');
+    document.querySelectorAll('[data-gallery-image]').forEach((button) => {
+        button.addEventListener('click', () => {
+            if (galleryMain) galleryMain.src = button.dataset.galleryImage;
+        });
+    });
+
     if (variantSelect && price && stockMessage) {
         variantSelect.addEventListener('change', () => {
             const option = variantSelect.selectedOptions[0];
@@ -61,7 +68,7 @@
                     discount.hidden = false;
                 }
                 stockMessage.textContent = 'Choose an option to see its stock and pricing.';
-                purchaseButtons.forEach((button) => { button.disabled = false; });
+                purchaseButtons.forEach((button) => { button.disabled = true; });
                 return;
             }
 

@@ -1,5 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import User
+from django.core.validators import MaxValueValidator, MinValueValidator
 import uuid
 
 
@@ -47,6 +48,12 @@ class Product(models.Model):
     name = models.CharField(max_length=200, null=True)
     price = models.FloatField(max_length=200, null=True)
     list_price = models.FloatField(null=True, blank=True)
+    gst_rate = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+    )
     cost_price = models.FloatField(null=True, blank=True)
     description = models.TextField(blank=True, default='')
     offer_text = models.CharField(max_length=255, blank=True, default='')
@@ -68,6 +75,16 @@ class Product(models.Model):
         return self.name
 
     @property
+    def is_out_of_stock(self):
+        active_variants = [variant for variant in self.variants.all() if variant.active]
+        if active_variants:
+            return all(
+                (variant.stock if variant.stock is not None else self.stock) == 0
+                for variant in active_variants
+            )
+        return self.stock == 0
+
+    @property
     def discount_percent(self):
         if self.list_price and self.price is not None and self.list_price > self.price:
             return round((self.list_price - self.price) / self.list_price * 100)
@@ -84,6 +101,23 @@ class Product(models.Model):
         except:
             url = ''
         return url
+
+
+class ProductImage(models.Model):
+    product = models.ForeignKey(
+        Product,
+        related_name='gallery_images',
+        on_delete=models.CASCADE,
+    )
+    image = models.ImageField(upload_to='product_gallery/')
+    sort_order = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ('sort_order', 'id')
+
+    def __str__(self):
+        return f'{self.product.name} photo {self.sort_order + 1}'
 
 
 class ProductVariant(models.Model):
@@ -112,6 +146,7 @@ class Order(models.Model):
         ('Pending Payment', 'Pending Payment'),
         ('Placed', 'Placed'),
         ('Packed', 'Packed'),
+        ('Dispatched', 'Dispatched'),
         ('Shipped', 'Shipped'),
         ('Out for Delivery', 'Out for Delivery'),
         ('Delivered', 'Delivered'),
@@ -121,8 +156,18 @@ class Order(models.Model):
     ]
     PAYMENT_METHOD_CHOICES = [
         ('payu', 'PayU'),
+        ('paypal', 'PayPal'),
         ('upi_manual', 'Manual UPI'),
         ('cod', 'Cash on delivery'),
+    ]
+    CANCELLATION_REASON_CHOICES = [
+        ('changed_mind', 'Changed my mind'),
+        ('ordered_by_mistake', 'Ordered by mistake'),
+        ('better_price', 'Found a better price'),
+        ('delivery_too_slow', 'Delivery is taking too long'),
+        ('payment_issue', 'Payment issue'),
+        ('change_details', 'Need to change order details'),
+        ('other', 'Other'),
     ]
     PAYMENT_STATUS_CHOICES = [
         ('pending', 'Pending'),
@@ -151,6 +196,12 @@ class Order(models.Model):
     inventory_released = models.BooleanField(default=False)
     coupon_code = models.CharField(max_length=24, blank=True)
     coupon_discount = models.FloatField(default=0)
+    gst_amount = models.FloatField(default=0)
+    platform_fee = models.FloatField(default=0)
+    platform_fee_gst = models.FloatField(default=0)
+    platform_fee_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    delivery_fee = models.FloatField(default=0)
+    total_amount = models.FloatField(null=True, blank=True)
 
     def __str__(self):
         return str(self.order_number or self.id)
@@ -172,10 +223,48 @@ class Order(models.Model):
         return total
 
     @property
+    def get_items_subtotal(self):
+        return self.get_cart_total + self.coupon_discount
+
+    @property
+    def get_total_amount(self):
+        if self.total_amount is not None:
+            return self.total_amount
+        return self.get_cart_total + self.gst_amount + self.platform_fee + self.platform_fee_gst + self.delivery_fee
+
+    @property
     def get_cart_items(self):
         orderitems = self.orderitem_set.all()
         total = sum([item.quantity for item in orderitems])
         return total
+
+class OrderFulfillment(models.Model):
+    STATUS_CHOICES = [
+        ('Placed', 'Order placed'),
+        ('Packed', 'Packed'),
+        ('Dispatched', 'Dispatched'),
+        ('Shipped', 'Shipped'),
+        ('Out for Delivery', 'Out for delivery'),
+        ('Delivered', 'Delivered'),
+        ('Cancelled', 'Cancelled'),
+    ]
+
+    order = models.ForeignKey(Order, related_name='fulfillments', on_delete=models.CASCADE)
+    seller_store = models.ForeignKey(SellerStore, related_name='fulfillments', on_delete=models.CASCADE)
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default='Placed')
+    shipping_partner = models.CharField(max_length=100, blank=True)
+    tracking_number = models.CharField(max_length=100, blank=True)
+    tracking_url = models.URLField(blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ('seller_store__name',)
+        unique_together = ('order', 'seller_store')
+
+    def __str__(self):
+        return f'{self.order} · {self.seller_store.name} · {self.status}'
+
 
 class OrderItem(models.Model):
     product = models.ForeignKey(Product, on_delete=models.SET_NULL, null=True)
@@ -188,6 +277,8 @@ class OrderItem(models.Model):
     stock_source = models.CharField(max_length=12, default='untracked')
     coupon_code = models.CharField(max_length=24, blank=True)
     coupon_discount = models.FloatField(default=0)
+    gst_rate = models.DecimalField(max_digits=4, decimal_places=2, default=0)
+    gst_amount = models.FloatField(default=0)
     date_added = models.DateTimeField(auto_now_add=True)
 
     @property

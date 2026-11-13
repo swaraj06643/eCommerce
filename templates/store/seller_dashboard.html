@@ -38,9 +38,15 @@
         <article><span>Active listings</span><strong>{{ active_listing_count }}</strong><small>{{ low_stock_count }} low-stock listing{{ low_stock_count|pluralize }}</small></article>
         <article><span>Recorded paid sales</span><strong>₹{{ paid_sales|floatformat:2 }}</strong><small>Gross item sales from confirmed paid orders</small></article>
         <article><span>Awaiting payment</span><strong>₹{{ awaiting_payment|floatformat:2 }}</strong><small>Pending and payment-verification orders</small></article>
+        <article><span>Open shipments</span><strong>{{ open_fulfillment_count }}</strong><small>Orders needing the next status update</small></article>
     </div>
     <p class="seller-vault-note">Vault figures are order records, not withdrawable funds. Seller payouts and platform fees are not currently processed in this app.</p>
 
+    <nav class="seller-workspace-nav" aria-label="Seller workspace shortcuts">
+        <a href="#seller-orders">Orders &amp; fulfillment</a>
+        <a href="#seller-listings">Product catalog</a>
+        <a href="#seller-listing-editor">Add or edit product</a>
+    </nav>
     <div class="seller-layout">
         <section class="seller-panel">
             <h2>Store profile</h2>
@@ -56,7 +62,7 @@
             </form>
         </section>
 
-        <section class="seller-panel seller-listing-editor">
+        <section class="seller-panel seller-listing-editor" id="seller-listing-editor">
             <h2>{% if editing_product_id %}Edit listing{% else %}Add a product{% endif %}</h2>
             <form method="post" enctype="multipart/form-data" class="seller-form">
                 {% csrf_token %}
@@ -66,6 +72,12 @@
                     <label for="{{ field.id_for_label }}">{{ field.label }}</label>
                     {{ field }}
                     {% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}
+                    {% if field.name == 'photos' and product_form.instance.pk %}
+                    <div class="seller-photo-preview" aria-label="Current product photos">
+                        {% if product_form.instance.image %}<img src="{{ product_form.instance.image.url }}" alt="Current main product photo">{% endif %}
+                        {% for photo in product_form.instance.gallery_images.all %}<img src="{{ photo.image.url }}" alt="Current product photo {{ forloop.counter|add:1 }}">{% endfor %}
+                    </div>
+                    {% endif %}
                     {% for error in field.errors %}<span class="seller-error">{{ error }}</span>{% endfor %}
                 {% endfor %}
                 {% if product_form.non_field_errors %}
@@ -77,19 +89,26 @@
         </section>
     </div>
 
-    <section class="seller-panel seller-products">
+    <section class="seller-panel seller-products" id="seller-listings">
         <div class="seller-section-heading"><h2>Your listings</h2><span>{{ product_count }} listing{{ product_count|pluralize }}</span></div>
+        <nav class="seller-listing-tabs" aria-label="Filter your product listings" role="tablist">
+            {% for tab in listing_tabs %}
+            <a class="seller-listing-tab {% if listing_status == tab.key %}is-selected{% endif %}" role="tab" aria-selected="{% if listing_status == tab.key %}true{% else %}false{% endif %}" href="{% url 'seller_dashboard' %}?listing_status={{ tab.key }}">{{ tab.label }} <span>{{ tab.count }}</span></a>
+            {% endfor %}
+        </nav>
         {% for product in products %}
         <article class="seller-product-row">
+            {% if product.imageURL %}<img class="seller-product-thumb" src="{{ product.imageURL }}" alt="{{ product.name }}">{% endif %}
             <div class="seller-product-name">
                 <strong>{{ product.name }}</strong>
                 <small>{% if product.category %}{{ product.category.name }} · {% endif %}₹{{ product.price|floatformat:2 }}</small>
             </div>
             <span class="seller-stock">
                 {% if not product.is_active %}Hidden
-                {% elif product.stock is None %}Stock not tracked
+                {% elif product.stock is None %}Listed · Stock not tracked
                 {% elif product.stock == 0 %}Out of stock
-                {% else %}{{ product.stock }} in stock{% endif %}
+                {% elif product.stock <= product.low_stock_threshold %}Limited stock · {{ product.stock }} left
+                {% else %}Listed · {{ product.stock }} in stock{% endif %}
             </span>
             <form method="post">
                 {% csrf_token %}
@@ -98,8 +117,29 @@
                 <button type="submit" class="seller-secondary-button">Edit</button>
             </form>
         </article>
+        <div class="seller-inventory-actions">
+            <form method="post" class="seller-stock-form">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="update_stock">
+                <input type="hidden" name="product_id" value="{{ product.id }}">
+                <input type="hidden" name="listing_status" value="{{ listing_status }}">
+                <label>Stock quantity
+                    <input type="number" name="stock" min="0" step="1" value="{{ product.stock|default_if_none:'' }}" placeholder="Not tracked" aria-label="Stock quantity for {{ product.name }}">
+                </label>
+                <small>Set to 0 for out of stock; small quantities show as limited stock. Leave blank to stop tracking.</small>
+                <button type="submit" class="seller-secondary-button">Update stock</button>
+            </form>
+            <form method="post" class="seller-visibility-form">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="set_visibility">
+                <input type="hidden" name="product_id" value="{{ product.id }}">
+                <input type="hidden" name="listing_status" value="{{ listing_status }}">
+                {% if product.is_active %}<input type="hidden" name="visibility" value="hidden"><button type="submit" class="seller-cancel">Hide listing</button>
+                {% else %}<input type="hidden" name="visibility" value="listed"><button type="submit" class="seller-secondary-button">List product</button>{% endif %}
+            </form>
+        </div>
         <div class="seller-coupon-manager">
-            <strong>Coupons</strong> for {{ product.name }}</strong>
+            <strong>Coupons for {{ product.name }}</strong>
             {% for coupon in product.coupons.all %}
             <div class="seller-coupon-row"><span><code>{{ coupon.code }}</code> · {{ coupon.discount_percent|floatformat:0 }}% off</span>
                 <form method="post">{% csrf_token %}<input type="hidden" name="action" value="delete_coupon"><input type="hidden" name="coupon_id" value="{{ coupon.id }}"><button type="submit" class="seller-cancel">Remove</button></form>
@@ -115,12 +155,12 @@
             {% else %}<small>Maximum of three coupon codes per product reached.</small>{% endif %}
         </div>
         {% empty %}
-        <p class="seller-empty">No listings yet. Add your first product using the form above.</p>
+        <p class="seller-empty">{% if product_count %}No listings in this tab. <a href="{% url 'seller_dashboard' %}">View all products</a>{% else %}No listings yet. Add your first listing using the form above.{% endif %}</p>
         {% endfor %}
     </section>
 
-    <section class="seller-panel seller-orders">
-        <div class="seller-section-heading"><h2>Recent orders containing your products</h2></div>
+    <section class="seller-panel seller-orders" id="seller-orders">
+        <div class="seller-section-heading"><h2>Orders &amp; fulfillment</h2><span>Update shipping progress</span> for your products</span></div>
         {% for group in seller_orders %}
         <article class="seller-order-row">
             <div class="seller-order-heading">
@@ -131,6 +171,22 @@
             <p>{{ item.product.name }}{% if item.variant_name %} ({{ item.variant_name }}){% endif %} × {{ item.quantity }} <span>₹{{ item.get_total|floatformat:2 }}</span></p>
             {% endfor %}
             <small>Payment: {{ group.order.get_payment_status_display }}</small>
+            {% if group.fulfillment %}
+            <form method="post" class="seller-fulfillment-form">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="update_fulfillment">
+                <input type="hidden" name="fulfillment_id" value="{{ group.fulfillment.id }}">
+                <label>Shipment status
+                    <select name="status" required {% if not group.can_update_fulfillment %}disabled{% endif %}>
+                        {% for value, label in group.fulfillment_status_options %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+                    </select>
+                </label>
+                <label>Delivery partner<input name="shipping_partner" maxlength="100" value="{{ group.fulfillment.shipping_partner }}" placeholder="Courier / delivery partner" {% if not group.can_update_fulfillment %}disabled{% endif %}></label>
+                <label>Tracking number<input name="tracking_number" maxlength="100" value="{{ group.fulfillment.tracking_number }}" placeholder="Shipment tracking number" {% if not group.can_update_fulfillment %}disabled{% endif %}></label>
+                <label>Tracking URL<input name="tracking_url" type="url" value="{{ group.fulfillment.tracking_url }}" placeholder="https://carrier.example/track" {% if not group.can_update_fulfillment %}disabled{% endif %}></label>
+                {% if group.can_update_fulfillment %}<button type="submit" class="seller-secondary-button">Save shipment update</button>{% else %}<small>Shipment updates are available after payment is confirmed.</small>{% endif %}
+            </form>
+            {% endif %}
         </article>
         {% empty %}
         <p class="seller-empty">Orders containing your products will appear here.</p>

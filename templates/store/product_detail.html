@@ -13,9 +13,18 @@
 <section class="product-detail">
     <div class="detail-image-panel">
         {% if product.imageURL %}
-            <img class="detail-image" src="{{ product.imageURL }}" alt="{{ product.name }}">
+            <img class="detail-image" data-gallery-main src="{{ product.imageURL }}" alt="{{ product.name }}">
         {% else %}
-            <img class="detail-image detail-image-placeholder" src="{% static 'images/placeholder.png' %}" alt="{{ product.name }}">
+            <img class="detail-image detail-image-placeholder" data-gallery-main src="{% static 'images/placeholder.png' %}" alt="{{ product.name }}">
+        {% endif %}
+        {% if product.gallery_images.all %}
+        <div class="detail-gallery" aria-label="More product photos">
+            {% for photo in product.gallery_images.all %}
+            <button type="button" class="detail-gallery-thumb" data-gallery-image="{{ photo.image.url }}" aria-label="View photo {{ forloop.counter|add:1 }} of {{ product.name }}">
+                <img src="{{ photo.image.url }}" alt="{{ product.name }} photo {{ forloop.counter|add:1 }}">
+            </button>
+            {% endfor %}
+        </div>
         {% endif %}
     </div>
 
@@ -45,10 +54,10 @@
                 {% endfor %}
             </select>
         </div>
-        <p class="detail-stock" id="detail-stock-message">Choose an option to see its stock and pricing.</p>
+        <p class="detail-stock" id="detail-stock-message">{% if product.is_out_of_stock %}Currently out of stock for all options.{% else %}Choose an option to see its stock and pricing.{% endif %}</p>
         {% endif %}
         {% if not variants %}<p class="detail-stock" id="detail-stock-message">
-            {% if product.stock is not None %}{% if product.stock %}{{ product.stock }} in stock{% else %}Currently out of stock{% endif %}
+            {% if product.stock is not None %}{% if product.stock %}{{ product.stock }} in stock{% else %}Currently out of stock. The seller must restock this listing before you can order.{% endif %}
             {% else %}Stock availability is confirmed when you place your order.{% endif %}
         </p>{% endif %}
 
@@ -63,7 +72,7 @@
             {% endif %}
             {% if coupons %}
             <div class="seller-coupon-list">
-                <strong>Seller coupons</strong></strong>
+                <strong>Seller coupons</strong>
                 {% for coupon in coupons %}<p><code>{{ coupon.code }}</code> — save {{ coupon.discount_percent|floatformat:0 }}% more on this product. Apply it at checkout.</p>{% endfor %}
             </div>
             {% endif %}
@@ -85,8 +94,8 @@
         </form>
 
         <div class="detail-actions">
-            <button type="button" data-product="{{ product.id }}" data-action="add" class="detail-add update-cart" {% if product.stock == 0 and not variants %}disabled{% endif %}>Add to bag</button>
-            <button type="button" data-product="{{ product.id }}" data-action="add" data-after-add="{% url 'checkout' %}" class="detail-buy update-cart" {% if product.stock == 0 and not variants %}disabled{% endif %}>Buy now</button>
+            <button type="button" data-product="{{ product.id }}" data-stock="{{ product.stock|default_if_none:'' }}" data-action="add" class="detail-add update-cart" {% if product.is_out_of_stock or variants %}disabled{% endif %}>{% if product.is_out_of_stock %}Out of stock{% else %}Add to bag{% endif %}</button>
+            <button type="button" data-product="{{ product.id }}" data-stock="{{ product.stock|default_if_none:'' }}" data-action="add" data-after-add="{% url 'checkout' %}" class="detail-buy update-cart" {% if product.is_out_of_stock or variants %}disabled{% endif %}>{% if product.is_out_of_stock %}Out of stock{% else %}Buy now{% endif %}</button>
         </div>
 
         <div class="detail-service-notes">

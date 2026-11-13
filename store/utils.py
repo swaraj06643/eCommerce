@@ -1,5 +1,6 @@
 import json
 import logging
+from urllib.parse import unquote
 
 from django.db.models import F, Prefetch
 
@@ -12,7 +13,7 @@ logger = logging.getLogger(__name__)
 def cookieCart(request):
     raw_cart = request.COOKIES.get('cart', '{}')
     try:
-        cart = json.loads(raw_cart)
+        cart = json.loads(unquote(raw_cart))
     except json.JSONDecodeError:
         logger.warning('Ignoring malformed guest cart cookie.')
         cart = {}
@@ -93,7 +94,7 @@ def cartData(request):
             order.orderitem_set.select_related('product', 'variant').all()
         )
         for item in items:
-            if item.unit_price is None and item.product_id:
+            if item.product_id and item.product:
                 item.unit_price = item.product.price + (
                     item.variant.price_adjustment if item.variant_id else 0
                 )

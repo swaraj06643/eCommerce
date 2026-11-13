@@ -1,10 +1,25 @@
 {% extends 'store/main.html' %}
+{% load static %}
 {% block title %}Order {{ order.order_number }} | Avatar Store{% endblock title %}
 {% block content %}
 <section class="order-complete-page">
     <p class="section-kicker">ORDER UPDATE</p>
     <h1>Order {{ order.order_number }}</h1>
-    <p class="order-complete-status">Status: <strong>{{ order.status }}</strong> · Payment: <strong>{{ order.get_payment_status_display }}</strong></p>
+    <p class="order-complete-status">Status: <strong data-order-status-label>{{ order.status }}</strong> · Payment: <strong>{{ order.get_payment_status_display }}</strong></p>
+    <div class="order-live-status" data-order-status-url="{% url 'order_status' order.public_token %}" aria-live="polite">
+        <h2>Seller shipment updates</h2>
+        {% for fulfillment in fulfillments %}
+        <article class="fulfillment-status-card" data-fulfillment-id="{{ fulfillment.id }}">
+            <strong>{{ fulfillment.seller_store.name }}</strong>
+            <span class="status-pill" data-fulfillment-status>{{ fulfillment.get_status_display }}</span>
+            <small>Updated <time data-fulfillment-updated datetime="{{ fulfillment.updated_at|date:'c' }}">{{ fulfillment.updated_at|date:'d M, Y H:i' }}</time></small>
+            <p data-tracking-details>{% if fulfillment.shipping_partner %}{{ fulfillment.shipping_partner }}{% endif %}{% if fulfillment.tracking_number %} · {{ fulfillment.tracking_number }}{% endif %}</p>
+            {% if fulfillment.tracking_url %}<a data-tracking-link href="{{ fulfillment.tracking_url }}" target="_blank" rel="noopener noreferrer">Track this shipment</a>{% else %}<a data-tracking-link hidden></a>{% endif %}
+        </article>
+        {% empty %}
+        <p>Seller shipment updates will appear here as soon as they are available.</p>
+        {% endfor %}
+    </div>
 
     {% if order.status == 'Cancelled' %}
     <div class="alert alert-warning">This order has been cancelled. Contact support if you already sent a payment.</div>
@@ -12,7 +27,7 @@
     <div class="manual-upi-panel">
         <h2>Pay by UPI</h2>
         <p>Send <strong>₹{{ payment.amount|floatformat:2 }}</strong> to <strong>{{ upi_id }}</strong> using your UPI app. Then submit the transfer reference (UTR) below. Your order remains pending until store staff verifies payment.</p>
-        <a class="btn btn-outline-dark" href="{{ upi_uri }}">Open UPI app</a>
+        <a class="btn btn-outline-dark" href="{{ upi_uri }}">Open UPI app (Google Pay / PhonePe)</a>
         <form method="post" class="upi-reference-form">
             {% csrf_token %}
             <label for="upi-reference">UPI transaction reference / UTR</label>
@@ -22,6 +37,8 @@
     </div>
     {% elif order.payment_method == 'payu' and payment.status == 'failed' %}
     <div class="alert alert-danger">PayU did not confirm this payment. Inventory has been released. Please place a new order or contact support.</div>
+    {% elif order.payment_method == 'paypal' and payment.status == 'failed' %}
+    <div class="alert alert-danger">PayPal checkout was cancelled or could not be completed. Inventory has been released. Please place a new order.</div>
     {% elif order.payment_status == 'pending_review' %}
     <div class="alert alert-info">Your UPI reference was received. Staff will verify the payment before confirming the order.</div>
     {% elif order.payment_method == 'cod' %}
@@ -36,8 +53,18 @@
     <form method="post" class="order-public-action">
         {% csrf_token %}
         <input type="hidden" name="action" value="cancel">
-        <label for="cancel-reason">Need to cancel? (optional reason)</label>
-        <input id="cancel-reason" name="reason" type="text" maxlength="1000">
+        <label for="cancel-reason">Why are you cancelling?</label>
+        <select id="cancel-reason" name="reason" class="cancel-reason-select" required>
+            <option value="">Choose a reason</option>
+            <option value="changed_mind">Changed my mind</option>
+            <option value="ordered_by_mistake">Ordered by mistake</option>
+            <option value="better_price">Found a better price</option>
+            <option value="delivery_too_slow">Delivery is taking too long</option>
+            <option value="payment_issue">Payment issue</option>
+            <option value="change_details">Need to change order details</option>
+            <option value="other">Other</option>
+        </select>
+        <textarea name="reason_detail" class="cancel-reason-detail" placeholder="Tell us the reason" maxlength="900" hidden></textarea>
         <button type="submit" class="btn btn-outline-danger">Cancel order</button>
     </form>
     {% elif order.status == 'Delivered' %}
@@ -55,17 +82,24 @@
         {% for item in items %}
         <div class="cart-row">
             <div style="flex:2">{{ item.product.name }}{% if item.variant_name %}<br><small>{{ item.variant_name }}</small>{% endif %}</div>
-            <div style="flex:1">₹{{ item.unit_price|floatformat:2 }} × {{ item.quantity }}</div>
+            <div style="flex:1">₹{{ item.unit_price|floatformat:2 }} × {{ item.quantity }}<br><small>GST {{ item.gst_rate|floatformat:0 }}% · ₹{{ item.gst_amount|floatformat:2 }}</small></div>
             <div style="flex:1">₹{{ item.get_total|floatformat:2 }}</div>
         </div>
         {% endfor %}
-        <h3>Total: ₹{{ order.get_cart_total|floatformat:2 }}</h3>
+        <p>Items subtotal: ₹{{ order.get_items_subtotal|floatformat:2 }}</p>
+        {% if order.coupon_discount %}<p>Seller coupon savings: −₹{{ order.coupon_discount|floatformat:2 }}</p>{% endif %}
+        <p>Subtotal after discounts: ₹{{ order.get_cart_total|floatformat:2 }}</p>
+        <p>GST on products: ₹{{ order.gst_amount|floatformat:2 }}</p>
+        <p>Platform fee ({{ order.platform_fee_rate|floatformat:2 }}%): ₹{{ order.platform_fee|floatformat:2 }}</p>
+        <p>GST on platform fee: ₹{{ order.platform_fee_gst|floatformat:2 }}</p>
+        <p>Delivery: <strong>FREE</strong></p>
+        <h3>Total to pay: ₹{{ order.get_total_amount|floatformat:2 }}</h3>
         {% if order.shipping_partner or order.tracking_number %}
-        <p><strong>Shipment:</strong> {{ order.shipping_partner|default:'Carrier not assigned' }}{% if order.tracking_number %} · Tracking {{ order.tracking_number }}{% endif %}{% if order.tracking_url %} · <a href="{{ order.tracking_url }}" target="_blank" rel="noopener noreferrer">Track package</a>{% endif %}</p>
-        {% else %}
-        <p>Shipment tracking will appear here after the store team adds a carrier and tracking number.</p>
+        <p><strong>Store shipment:</strong> {{ order.shipping_partner|default:'Carrier not assigned' }}{% if order.tracking_number %} · Tracking {{ order.tracking_number }}{% endif %}{% if order.tracking_url %} · <a href="{{ order.tracking_url }}" target="_blank" rel="noopener noreferrer">Track package</a>{% endif %}</p>
         {% endif %}
+        {% if invoice_available %}<a class="btn btn-primary" href="{% url 'download_invoice' order.public_token %}">Download invoice (PDF)</a>{% else %}<p>The invoice will be available after payment is confirmed.</p>{% endif %}
     </div>
     <p><a class="hero-cta" href="{% url 'store' %}">Continue shopping</a> <a href="{% url 'help' %}">Get help</a></p>
 </section>
 {% endblock content %}
+{% block extra_scripts %}<script src="{% static 'js/order-status.js' %}"></script>{% endblock extra_scripts %}

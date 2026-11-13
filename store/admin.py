@@ -7,10 +7,12 @@ from .models import (
     Category,
     Customer,
     Order,
+    OrderFulfillment,
     OrderItem,
     Payment,
     Product,
     ProductCoupon,
+    ProductImage,
     ProductVariant,
     SellerStore,
     ShippingAddress,
@@ -21,6 +23,11 @@ from .utils import release_reserved_inventory
 class ProductVariantInline(admin.TabularInline):
     model = ProductVariant
     extra = 1
+
+
+class ProductImageInline(admin.TabularInline):
+    model = ProductImage
+    extra = 0
 
 
 class StockLevelFilter(admin.SimpleListFilter):
@@ -52,14 +59,14 @@ class CategoryAdmin(admin.ModelAdmin):
 
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
-    list_display = ('name', 'seller_store', 'category', 'price', 'stock', 'stock_alert', 'is_active', 'digital')
+    list_display = ('name', 'seller_store', 'category', 'price', 'gst_rate', 'stock', 'stock_alert', 'is_active', 'digital')
     list_filter = ('seller_store', 'category', StockLevelFilter, 'is_active', 'digital')
     search_fields = ('name', 'description', 'variants__sku')
     fields = (
-        'name', 'seller_store', 'category', 'price', 'list_price', 'cost_price', 'description',
+        'name', 'seller_store', 'category', 'price', 'list_price', 'gst_rate', 'cost_price', 'description',
         'offer_text', 'stock', 'low_stock_threshold', 'digital', 'is_active', 'image',
     )
-    inlines = (ProductVariantInline,)
+    inlines = (ProductVariantInline, ProductImageInline)
 
     @admin.display(description='Stock alert', ordering='stock')
     def stock_alert(self, product):
@@ -73,7 +80,10 @@ class ProductAdmin(admin.ModelAdmin):
 class OrderItemInline(admin.TabularInline):
     model = OrderItem
     extra = 0
-    readonly_fields = ('product', 'variant_name', 'quantity', 'unit_price', 'unit_cost')
+    readonly_fields = (
+        'product', 'variant_name', 'quantity', 'unit_price', 'unit_cost',
+        'coupon_code', 'coupon_discount', 'gst_rate', 'gst_amount',
+    )
     can_delete = False
 
 
@@ -87,7 +97,8 @@ class OrderAdmin(admin.ModelAdmin):
     search_fields = ('order_number', 'customer__name', 'customer__email', 'tracking_number')
     readonly_fields = (
         'public_token', 'visitor_key', 'transaction_id', 'date_order', 'delivered_at',
-        'coupon_code', 'coupon_discount',
+        'coupon_code', 'coupon_discount', 'gst_amount', 'platform_fee',
+        'platform_fee_gst', 'platform_fee_rate', 'delivery_fee', 'total_amount',
     )
     inlines = (OrderItemInline,)
     fieldsets = (
@@ -95,7 +106,10 @@ class OrderAdmin(admin.ModelAdmin):
         ('Payment', {'fields': ('payment_method', 'payment_status', 'transaction_id')}),
         ('Shipping', {'fields': ('shipping_partner', 'tracking_number', 'tracking_url')}),
         ('Customer requests', {'fields': ('cancellation_reason', 'return_reason')}),
-        ('Discount', {'fields': ('coupon_code', 'coupon_discount')}),
+        ('Discount and charges', {'fields': (
+            'coupon_code', 'coupon_discount', 'gst_amount', 'platform_fee',
+            'platform_fee_gst', 'platform_fee_rate', 'delivery_fee', 'total_amount',
+        )}),
         ('Internal', {'fields': ('public_token', 'visitor_key', 'inventory_released')}),
     )
 
@@ -111,6 +125,14 @@ class OrderAdmin(admin.ModelAdmin):
         if obj.status in ('Cancelled', 'Returned') and previous_status != obj.status:
             with transaction.atomic():
                 release_reserved_inventory(Order.objects.select_for_update().get(pk=obj.pk))
+
+
+@admin.register(OrderFulfillment)
+class OrderFulfillmentAdmin(admin.ModelAdmin):
+    list_display = ('order', 'seller_store', 'status', 'shipping_partner', 'tracking_number', 'updated_at')
+    list_filter = ('status', 'seller_store', 'updated_at')
+    search_fields = ('order__order_number', 'seller_store__name', 'tracking_number')
+    readonly_fields = ('updated_at', 'delivered_at')
 
 
 @admin.register(Payment)

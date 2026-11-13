@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/3.2/ref/settings/
 """
 import os
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import parse_qsl, unquote, urlsplit
 
@@ -149,7 +150,29 @@ LOGOUT_REDIRECT_URL = '/'
 PAYU_KEY = os.environ.get('PAYU_KEY', '')
 PAYU_SALT = os.environ.get('PAYU_SALT', '')
 PAYU_PAYMENT_URL = os.environ.get('PAYU_PAYMENT_URL', 'https://test.payu.in/_payment')
+PAYPAL_CLIENT_ID = os.environ.get('PAYPAL_CLIENT_ID', '')
+PAYPAL_CLIENT_SECRET = os.environ.get('PAYPAL_CLIENT_SECRET', '')
+PAYPAL_API_BASE = os.environ.get(
+    'PAYPAL_API_BASE',
+    'https://api-m.sandbox.paypal.com',
+).rstrip('/')
 AVATAR_UPI_ID = os.environ.get('AVATAR_UPI_ID', 'swarajrath6@oksbi')
+INVOICE_AUTHORIZED_SIGNATORY = os.environ.get(
+    'INVOICE_AUTHORIZED_SIGNATORY',
+    'Avatar Store Authorized Signatory',
+)
+try:
+    PLATFORM_FEE_PERCENT = Decimal(os.environ.get('PLATFORM_FEE_PERCENT', '2.00'))
+    PLATFORM_FEE_GST_RATE = Decimal(os.environ.get('PLATFORM_FEE_GST_RATE', '18.00'))
+except InvalidOperation as error:
+    raise ImproperlyConfigured('Platform fee and GST rates must be decimal numbers.') from error
+if (
+    not PLATFORM_FEE_PERCENT.is_finite()
+    or not Decimal('0') <= PLATFORM_FEE_PERCENT <= Decimal('100')
+    or not PLATFORM_FEE_GST_RATE.is_finite()
+    or not Decimal('0') <= PLATFORM_FEE_GST_RATE <= Decimal('100')
+):
+    raise ImproperlyConfigured('Platform fee and GST rates must be between 0 and 100.')
 
 EMAIL_HOST = os.environ.get('EMAIL_HOST', '')
 EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '587'))

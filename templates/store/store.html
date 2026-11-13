@@ -96,7 +96,7 @@
                                 <h3><a class="product-title-link" href="{% url 'product_detail' product.id %}">{{ product.name }}</a></h3>
                                 <div class="product-bottom">
                                     <div class="product-price-group"><strong class="product-price">&#8377;{{ product.price|floatformat:2 }}</strong>{% if product.list_price and product.list_price > product.price %}<del class="product-list-price">&#8377;{{ product.list_price|floatformat:2 }}</del>{% endif %}</div>
-                                    {% if product.has_variants %}<a class="add-to-bag choose-options" href="{% url 'product_detail' product.id %}"></a>Choose</a>{% else %}<button data-product="{{ product.id }}" data-action="add" class="add-to-bag update-cart" aria-label="Add {{ product.name }} to cart" {% if product.stock == 0 %}disabled{% endif %}>+</button>{% endif %}
+                                    {% if product.has_variants %}<a class="add-to-bag choose-options" href="{% url 'product_detail' product.id %}">Choose</a>{% else %}<button data-product="{{ product.id }}" data-stock="{{ product.stock|default_if_none:'' }}" data-action="add" class="add-to-bag update-cart{% if product.is_out_of_stock %} is-out-of-stock{% endif %}" aria-label="{% if product.is_out_of_stock %}{{ product.name }} is out of stock{% else %}Add {{ product.name }} to cart{% endif %}" {% if product.is_out_of_stock %}disabled{% endif %}>{% if product.is_out_of_stock %}Out of stock{% else %}+{% endif %}</button>{% endif %}
                                 </div>
                                 <p class="product-description">{{ product.description }}</p>
                                 {% if product.seller_store %}<p class="product-seller">Sold by {{ product.seller_store.name }}</p>{% endif %}
@@ -123,7 +123,7 @@
                         <h3><a class="product-title-link" href="{% url 'product_detail' product.id %}">{{ product.name }}</a></h3>
                         <div class="product-bottom">
                             <div class="product-price-group"><strong class="product-price">&#8377;{{ product.price|floatformat:2 }}</strong>{% if product.list_price and product.list_price > product.price %}<del class="product-list-price">&#8377;{{ product.list_price|floatformat:2 }}</del>{% endif %}</div>
-                            {% if product.has_variants %}<a class="add-to-bag choose-options" href="{% url 'product_detail' product.id %}">Choose</a>{% else %}<button data-product="{{ product.id }}" data-action="add" class="add-to-bag update-cart" aria-label="Add {{ product.name }} to cart" {% if product.stock == 0 %}disabled{% endif %}>+</button>{% endif %}
+                            {% if product.has_variants %}<a class="add-to-bag choose-options" href="{% url 'product_detail' product.id %}">Choose</a>{% else %}<button data-product="{{ product.id }}" data-stock="{{ product.stock|default_if_none:'' }}" data-action="add" class="add-to-bag update-cart{% if product.is_out_of_stock %} is-out-of-stock{% endif %}" aria-label="{% if product.is_out_of_stock %}{{ product.name }} is out of stock{% else %}Add {{ product.name }} to cart{% endif %}" {% if product.is_out_of_stock %}disabled{% endif %}>{% if product.is_out_of_stock %}Out of stock{% else %}+{% endif %}</button>{% endif %}
                         </div>
                         <p class="product-description">{{ product.description }}</p>
                         {% if product.seller_store %}<p class="product-seller">Sold by {{ product.seller_store.name }}</p>{% endif %}

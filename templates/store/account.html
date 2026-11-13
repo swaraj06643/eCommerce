@@ -1,4 +1,5 @@
 {% extends 'store/main.html' %}
+{% load static %}
 {% block content %}
 <div class="account-page">
     <div class="account-header">
@@ -57,19 +58,38 @@
                             <small>{{ order.date_order|date:'d M, Y' }}</small>
                         </div>
                         <div>
-                            <span class="status-pill status-{{ order.status|slugify }}">{{ order.status }}</span>
+                            <span class="status-pill status-{{ order.status|slugify }}" data-order-status-label>{{ order.status }}</span>
                             <small class="payment-status">Payment: {{ order.get_payment_status_display }}</small>
                         </div>
-                        <div class="order-total">₹{{ order.get_cart_total|floatformat:2 }}</div>
+                        <div class="order-total">₹{{ order.get_total_amount|floatformat:2 }}</div>
                       </div>
-                      {% if order.tracking_number or order.shipping_partner %}
-                      <p class="tracking-summary"><strong>Shipment:</strong> {{ order.shipping_partner|default:'Carrier not assigned' }}{% if order.tracking_number %} · Tracking {{ order.tracking_number }}{% endif %}{% if order.tracking_url %} · <a href="{{ order.tracking_url }}" target="_blank" rel="noopener noreferrer">Track package</a>{% endif %}</p>
-                      {% endif %}
+                      <div class="order-live-status" data-order-status-url="{% url 'order_status' order.public_token %}" aria-live="polite">
+                        {% for fulfillment in order.fulfillments.all %}
+                        <p class="account-fulfillment" data-fulfillment-id="{{ fulfillment.id }}">
+                            <strong>{{ fulfillment.seller_store.name }}:</strong>
+                            <span data-fulfillment-status>{{ fulfillment.get_status_display }}</span>
+                            <small> · Updated <time data-fulfillment-updated datetime="{{ fulfillment.updated_at|date:'c' }}">{{ fulfillment.updated_at|date:'d M, Y H:i' }}</time></small>
+                            <span data-tracking-details>{% if fulfillment.shipping_partner %}{{ fulfillment.shipping_partner }}{% endif %}{% if fulfillment.tracking_number %} · {{ fulfillment.tracking_number }}{% endif %}</span>
+                            {% if fulfillment.tracking_url %}<a data-tracking-link href="{{ fulfillment.tracking_url }}" target="_blank" rel="noopener noreferrer">Track</a>{% else %}<a data-tracking-link hidden></a>{% endif %}
+                        </p>
+                        {% empty %}<p class="tracking-summary">Shipment updates will appear here when the seller prepares your order.</p>{% endfor %}
+                      </div>
                       <div class="order-actions">
                         {% if order.status == 'Pending Payment' or order.status == 'Placed' or order.status == 'Packed' %}
                         <form method="post" action="{% url 'order_action' order.id %}">
                             {% csrf_token %}<input type="hidden" name="action" value="cancel">
-                            <input type="text" name="reason" placeholder="Reason (optional)">
+                            <label for="cancel-reason-{{ order.id }}">Cancellation reason</label>
+                            <select id="cancel-reason-{{ order.id }}" name="reason" class="cancel-reason-select" required>
+                                <option value="">Choose a reason</option>
+                                <option value="changed_mind">Changed my mind</option>
+                                <option value="ordered_by_mistake">Ordered by mistake</option>
+                                <option value="better_price">Found a better price</option>
+                                <option value="delivery_too_slow">Delivery is taking too long</option>
+                                <option value="payment_issue">Payment issue</option>
+                                <option value="change_details">Need to change order details</option>
+                                <option value="other">Other</option>
+                            </select>
+                            <textarea name="reason_detail" class="cancel-reason-detail" placeholder="Tell us the reason" maxlength="900" hidden></textarea>
                             <button type="submit" class="btn btn-outline-danger btn-sm">Cancel order</button>
                         </form>
                         {% elif order.status == 'Delivered' %}
@@ -79,6 +99,10 @@
                             <button type="submit" class="btn btn-outline-dark btn-sm">Request return</button>
                         </form>
                         {% endif %}
+                      </div>
+                      <div class="order-actions">
+                        <a class="btn btn-outline-dark btn-sm" href="{% url 'order_complete' order.public_token %}">View order</a>
+                        {% if order.payment_status == 'paid' or order.payment_method == 'cod' and order.status != 'Cancelled' and order.status != 'Returned' %}<a class="btn btn-primary btn-sm" href="{% url 'download_invoice' order.public_token %}">Download invoice</a>{% endif %}
                       </div>
                     </article>
                     {% endfor %}
@@ -92,3 +116,4 @@
     </div>
 </div>
 {% endblock %}
+{% block extra_scripts %}<script src="{% static 'js/order-status.js' %}"></script>{% endblock extra_scripts %}
