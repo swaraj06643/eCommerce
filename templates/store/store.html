@@ -23,6 +23,20 @@
         </div>
      </section>
 
+     {% if sponsored_campaigns %}
+     <section class="sponsored-shelf" aria-label="Sponsored product offers">
+        <div class="sponsored-heading"><div><p class="section-kicker">FEATURED BY AVATAR</p><h2></h2>Sponsored finds</h2></div><span class="sponsored-disclosure">Sponsored</span></div>
+        <div class="sponsored-grid">
+            {% for campaign in sponsored_campaigns %}
+            <a class="sponsored-product" href="{% url 'sponsored_campaign_click' campaign.id %}">
+                <img src="{{ campaign.product.imageURL }}" alt="{{ campaign.product.name }}">
+                <span class="sponsored-copy"><small>Sponsored</small><strong>{{ campaign.display_title }}</strong><span>{{ campaign.product.name }} · ₹{{ campaign.product.price|floatformat:2 }}</span><span class="sponsored-cta">View product →</span></span>
+            </a>
+            {% endfor %}
+        </div>
+     </section>
+     {% endif %}
+
      <section class="collection-section" id="products">
         <div class="collection-heading">
             <div>

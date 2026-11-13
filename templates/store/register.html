@@ -19,6 +19,10 @@
                 <label for="id_phone">Indian phone (optional; enables OTP login)</label>
                 <input id="id_phone" name="phone" type="tel" autocomplete="tel" inputmode="tel" placeholder="10-digit mobile number" pattern="[0-9+ -]{10,16}">
             </p>
+            <p>
+                <label for="id_referral_code">Referral code (optional)</label>
+                <input id="id_referral_code" name="referral_code" type="text" value="{{ referral_code }}" maxlength="12" autocomplete="off">
+            </p>
             {{ form.as_p }}
             <button type="submit" class="btn btn-primary btn-block">Register</button>
         </form>

@@ -13,6 +13,7 @@ from django.db.models import F
 from django.utils import timezone
 
 from .models import Order, Payment, Product, ProductVariant, Refund, ReturnRequest
+from .rewards import reverse_order_rewards
 
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,7 @@ def _complete_refund(refund, provider_reference):
             order.payment_status = 'refunded'
             order.status = 'Returned'
             order.save(update_fields=['payment_status', 'status'])
+            reverse_order_rewards(order)
         refund.return_request.status = 'refunded'
         refund.return_request.save(update_fields=['status', 'updated_at'])
         return refund

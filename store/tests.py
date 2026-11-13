@@ -41,12 +41,20 @@ from .models import (
     SavedAddress,
     SellerStore,
     ShippingAddress,
+    SponsoredCampaign,
+    SuperCoinEntry,
     WishlistItem,
 )
 from .postal import PostalLookupError, validate_delivery_location
 from .sms import send_phone_otp, verify_phone_otp
 from .notifications import dispatch_order_email, queue_order_update
-from .refunds import RefundProviderError, process_return_refund, restock_return_items
+from .refunds import (
+    RefundProviderError,
+    confirm_refund_succeeded,
+    process_return_refund,
+    restock_return_items,
+)
+from .rewards import coin_balance, grant_order_rewards
 from .views import PayPalGatewayError
 from eCommerce.settings import database_config
 
@@ -735,6 +743,149 @@ class StorefrontTests(TestCase):
         self.assertEqual(order.get_total_amount, 215.44)
         self.assertEqual(line.gst_amount, 32.22)
         self.assertEqual(payment.amount, 215.44)
+
+    def test_super_coins_are_awarded_once_only_after_delivery_and_payment(self):
+        referrer = Customer.objects.create(name='Referrer', email='referrer@example.com')
+        buyer_user = User.objects.create_user(
+            username='referred-buyer', email='referred@example.com', password='Password!123',
+        )
+        customer = Customer.objects.create(
+            user=buyer_user,
+            name='Referred Buyer',
+            email='referred@example.com',
+            referred_by=referrer,
+        )
+        order = Order.objects.create(
+            customer=customer,
+            complete=True,
+            status='Delivered',
+            payment_status='pending',
+            total_amount=1000.75,
+        )
+        payment = Payment.objects.create(
+            order=order,
+            method='cod',
+            amount=1000.75,
+            transaction_id='coins-delivered-order',
+            status='pending',
+        )
+        self.assertEqual(grant_order_rewards(order), 0)
+        payment.status = 'paid'
+        payment.save(update_fields=['status', 'updated_at'])
+        order.payment_status = 'paid'
+        order.save(update_fields=['payment_status'])
+
+        with override_settings(REFERRAL_REWARD_COINS=25):
+            self.assertEqual(grant_order_rewards(order), 1000)
+            self.assertEqual(grant_order_rewards(order), 0)
+            second_order = Order.objects.create(
+                customer=customer, complete=True, status='Delivered', payment_status='paid',
+            )
+            Payment.objects.create(
+                order=second_order, method='cod', amount=150,
+                transaction_id='coins-second-order', status='paid',
+            )
+            self.assertEqual(grant_order_rewards(second_order), 150)
+
+        self.assertEqual(coin_balance(customer), 1150)
+        self.assertEqual(coin_balance(referrer), 25)
+        self.assertEqual(SuperCoinEntry.objects.filter(customer=customer, entry_type='earned').count(), 2)
+        self.assertEqual(SuperCoinEntry.objects.filter(customer=referrer, entry_type='referral').count(), 1)
+
+    def test_super_coin_redemption_is_server_calculated_and_restored_on_cancel(self):
+        user = User.objects.create_user(
+            username='coin-buyer', email='coins@example.com', password='Password!123',
+        )
+        customer = Customer.objects.create(
+            user=user, name='Coin Buyer', email='coins@example.com', phone='+919876543210',
+        )
+        SuperCoinEntry.objects.create(
+            customer=customer, delta=200, entry_type='earned', event_key='seed:coin-balance',
+        )
+        self.client.force_login(user)
+        open_order = Order.objects.create(customer=customer, complete=False)
+        OrderItem.objects.create(order=open_order, product=self.product, quantity=2, unit_price=179)
+        response = self.client.post(reverse('checkout'), {
+            'payment_method': 'cod',
+            'coins_to_redeem': '200',
+            'phone': '9876543210',
+            'address': '12 Market Road',
+            'city': 'Bhubaneswar',
+            'state': 'Odisha',
+            'zipcode': '751001',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        order = Order.objects.get(customer=customer, complete=True)
+        payment = Payment.objects.get(order=order)
+        self.assertEqual(order.coins_redeemed, 200)
+        self.assertEqual(order.coin_discount, 20)
+        self.assertEqual(order.get_total_amount, 346.45)
+        self.assertEqual(payment.amount, order.get_total_amount)
+        self.assertEqual(coin_balance(customer), 0)
+
+        response = self.client.post(reverse('order_action', args=[order.pk]), {
+            'action': 'cancel', 'reason': 'changed_mind',
+        })
+        self.assertEqual(response.status_code, 302)
+        order.refresh_from_db()
+        self.assertEqual(order.status, 'Cancelled')
+        self.assertEqual(coin_balance(customer), 200)
+        self.assertEqual(SuperCoinEntry.objects.filter(order=order, entry_type='restored').count(), 1)
+
+    def test_checkout_rejects_non_hundred_coin_redemption(self):
+        user = User.objects.create_user(
+            username='invalid-coin-buyer', email='invalid-coins@example.com', password='Password!123',
+        )
+        customer = Customer.objects.create(user=user, name='Buyer', email=user.email)
+        self.client.force_login(user)
+        open_order = Order.objects.create(customer=customer, complete=False)
+        OrderItem.objects.create(order=open_order, product=self.product, quantity=1, unit_price=179)
+        response = self.client.post(reverse('checkout'), {
+            'payment_method': 'cod', 'coins_to_redeem': '50',
+            'address': '12 Market Road', 'city': 'Bhubaneswar',
+            'state': 'Odisha', 'zipcode': '751001', 'phone': '9876543210',
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertContains(response, 'multiples of 100', status_code=400)
+        self.assertFalse(Order.objects.filter(customer=customer, complete=True).exists())
+
+    def test_registration_applies_referral_code_and_account_shows_rewards_tray(self):
+        referrer_user = User.objects.create_user(
+            username='referring-friend', email='friend@example.com', password='Password!123',
+        )
+        referrer = Customer.objects.create(
+            user=referrer_user, name='Referrer', email='friend@example.com',
+        )
+        response = self.client.post(reverse('register'), {
+            'username': 'invited-buyer',
+            'password1': 'SafePassword!123',
+            'password2': 'SafePassword!123',
+            'first_name': 'Invited Buyer',
+            'email': 'invited@example.com',
+            'phone': '',
+            'referral_code': referrer.referral_code,
+        })
+        self.assertRedirects(response, reverse('account'))
+        invited = Customer.objects.get(user__username='invited-buyer')
+        self.assertEqual(invited.referred_by, referrer)
+        self.assertContains(self.client.get(reverse('account')), 'Super Coins')
+        self.assertContains(self.client.get(reverse('account')), 'Refer a friend')
+        self.assertContains(self.client.get(reverse('account')), invited.referral_code)
+
+    def test_sponsored_campaign_is_labeled_and_counts_impressions_and_clicks(self):
+        campaign = SponsoredCampaign.objects.create(
+            product=self.product, title='Featured headphones', active=True,
+        )
+        response = self.client.get(reverse('store'))
+        self.assertContains(response, 'Sponsored finds')
+        self.assertContains(response, 'Featured headphones')
+        campaign.refresh_from_db()
+        self.assertEqual(campaign.impressions, 1)
+        response = self.client.get(reverse('sponsored_campaign_click', args=[campaign.pk]))
+        self.assertRedirects(response, reverse('product_detail', args=[self.product.pk]))
+        campaign.refresh_from_db()
+        self.assertEqual(campaign.clicks, 1)
 
     def test_signed_in_customer_can_checkout_without_email_verification(self):
         user = User.objects.create_user(
@@ -2240,6 +2391,39 @@ class ReturnRefundTests(TestCase):
             amount=Decimal('179.00'),
         )
         return order, payment, return_request, refund
+
+    def test_full_refund_reverses_earned_coins_and_restores_spent_coins(self):
+        order, payment, return_request, refund = self.make_return()
+        order.coins_redeemed = 100
+        order.coin_discount = 10
+        order.save(update_fields=['coins_redeemed', 'coin_discount'])
+        SuperCoinEntry.objects.create(
+            customer=self.customer,
+            order=order,
+            delta=179,
+            entry_type='earned',
+            event_key=f'order:{order.pk}:coins:earned',
+        )
+        SuperCoinEntry.objects.create(
+            customer=self.customer,
+            order=order,
+            delta=-100,
+            entry_type='redeemed',
+            event_key=f'order:{order.pk}:coins:redeemed',
+        )
+
+        confirmed = confirm_refund_succeeded(refund.pk, 'verified-refund-reference')
+
+        order.refresh_from_db()
+        self.assertEqual(confirmed.status, 'succeeded')
+        self.assertEqual(order.status, 'Returned')
+        self.assertEqual(coin_balance(self.customer), 0)
+        self.assertTrue(SuperCoinEntry.objects.filter(
+            event_key=f'order:{order.pk}:coins:earned:reversed', delta=-179,
+        ).exists())
+        self.assertTrue(SuperCoinEntry.objects.filter(
+            event_key=f'order:{order.pk}:coins:restored', delta=100,
+        ).exists())
 
     def test_return_action_is_owner_scoped_and_requires_delivery_window(self):
         recent_order = Order.objects.create(

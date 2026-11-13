@@ -125,16 +125,21 @@
               <li class="nav-item">
                 <a class="nav-link" href="{% url 'store' %}#products">Shop</a>
               </li>
-              <li class="nav-item">
-                  <a class="nav-link" href="{% url 'account' %}">Account</a>
-              </li>
               {% if request.user.is_authenticated %}
-              <li class="nav-item">
-                  <a class="nav-link" href="{% url 'wishlist' %}">Wishlist</a>
+              <li class="nav-item dropdown account-menu">
+                  <a class="nav-link dropdown-toggle" href="{% url 'account' %}" id="accountMenu" role="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">My Avatar</a>
+                  <div class="dropdown-menu" aria-labelledby="accountMenu">
+                      <a class="dropdown-item" href="{% url 'account' %}#orders">Orders &amp; tracking</a>
+                      <a class="dropdown-item" href="{% url 'account' %}#rewards">Super Coins</a>
+                      <a class="dropdown-item" href="{% url 'account' %}#referrals">Refer a friend</a>
+                      <a class="dropdown-item" href="{% url 'account' %}#saved-addresses">Saved addresses</a>
+                      <a class="dropdown-item" href="{% url 'wishlist' %}">Wishlist</a>
+                      <a class="dropdown-item" href="{% url 'account_settings' %}">Settings</a>
+                      <a class="dropdown-item" href="{% url 'seller_dashboard' %}">Seller Center</a>
+                  </div>
               </li>
-              <li class="nav-item">
-                  <a class="nav-link" href="{% url 'account_settings' %}">Settings</a>
-              </li>
+              {% else %}
+              <li class="nav-item"><a class="nav-link" href="{% url 'account' %}">Account</a></li>
               {% endif %}
               <li class="nav-item">
                   <a class="nav-link" href="{% url 'seller_login' %}">Seller login</a>

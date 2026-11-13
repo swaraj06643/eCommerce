@@ -95,7 +95,8 @@
         {% endfor %}
         <p>Items subtotal: ₹{{ order.get_items_subtotal|floatformat:2 }}</p>
         {% if order.coupon_discount %}<p>Seller coupon savings: −₹{{ order.coupon_discount|floatformat:2 }}</p>{% endif %}
-        <p>Subtotal after discounts: ₹{{ order.get_cart_total|floatformat:2 }}</p>
+        {% if order.coin_discount %}<p>Super Coin savings ({{ order.coins_redeemed }} coins): −₹{{ order.coin_discount|floatformat:2 }}</p>{% endif %}
+        <p></p>Subtotal after discounts: ₹{{ order.get_cart_total|floatformat:2 }}</p>
         <p>GST on products: ₹{{ order.gst_amount|floatformat:2 }}</p>
         <p>Platform fee ({{ order.platform_fee_rate|floatformat:2 }}%): ₹{{ order.platform_fee|floatformat:2 }}</p>
         <p>GST on platform fee: ₹{{ order.platform_fee_gst|floatformat:2 }}</p>

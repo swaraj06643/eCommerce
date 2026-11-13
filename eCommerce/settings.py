@@ -179,6 +179,12 @@ if (
     or not Decimal('0') <= PLATFORM_FEE_GST_RATE <= Decimal('100')
 ):
     raise ImproperlyConfigured('Platform fee and GST rates must be between 0 and 100.')
+try:
+    REFERRAL_REWARD_COINS = int(os.environ.get('REFERRAL_REWARD_COINS', '0'))
+except ValueError as error:
+    raise ImproperlyConfigured('REFERRAL_REWARD_COINS must be a non-negative integer.') from error
+if REFERRAL_REWARD_COINS < 0:
+    raise ImproperlyConfigured('REFERRAL_REWARD_COINS must be a non-negative integer.')
 
 EMAIL_HOST = os.environ.get('EMAIL_HOST', '')
 EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '587'))

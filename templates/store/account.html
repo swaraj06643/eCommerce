@@ -10,6 +10,16 @@
         <a href="{% url 'logout' %}" class="btn btn-outline-dark">Logout</a>
     </div>
 
+    <nav class="account-tray" aria-label="Account sections">
+        <a href="#orders">Orders &amp; tracking</a>
+        <a href="#rewards">Super Coins</a>
+        <a href="#referrals">Refer a friend</a>
+        <a href="#saved-addresses">Saved addresses</a>
+        <a href="{% url 'wishlist' %}">Wishlist</a>
+        <a href="{% url 'account_settings' %}">Settings</a>
+        <a href="{% url 'seller_login' %}">Seller Center</a>
+    </nav>
+
     <section class="account-seller-banner">
         <div>
             <p class="section-kicker">SELL ON AVATAR</p>
@@ -43,7 +53,7 @@
         </div>
 
         <div class="col-lg-8">
-            <div class="account-card orders-card">
+            <div class="account-card orders-card" id="orders">
                 <div class="card-head">
                     <h3>Recent orders</h3>
                     <span>{{ orders|length }} order{{ orders|length|pluralize }}</span>
@@ -61,7 +71,7 @@
                             <span class="status-pill status-{{ order.status|slugify }}" data-order-status-label>{{ order.status }}</span>
                             <small class="payment-status">Payment: {{ order.get_payment_status_display }}</small>
                         </div>
-                        <div class="order-total">₹{{ order.get_total_amount|floatformat:2 }}</div>
+                        <div class="order-total">₹{{ order.get_total_amount|floatformat:2 }}{% if order.coin_discount %}<small class="order-coin-savings">−₹{{ order.coin_discount|floatformat:2 }} Super Coins</small>{% endif %}</div>
                       </div>
                       <div class="order-live-status" data-order-status-url="{% url 'order_status' order.public_token %}" aria-live="polite">
                         {% for fulfillment in order.fulfillments.all %}
@@ -118,6 +128,29 @@
                 {% endif %}
             </div>
         </div>
+    </div>
+
+    <div class="account-perks-grid">
+        <section class="account-card rewards-card" id="rewards">
+            <div class="card-head"><div><p class="section-kicker">AVATAR REWARDS</p><h3></h3>Super Coins</h3></div><strong class="coin-balance">{{ super_coin_balance }} coins</strong></div>
+            <p>Earn 1 Super Coin for every ₹1 of a successful paid order after delivery. Redeem 100 coins for ₹10 off at checkout; redemptions are applied in groups of 100.</p>
+            {% if coin_entries %}
+            <ul class="coin-ledger">
+                {% for entry in coin_entries %}
+                <li><span>{{ entry.get_entry_type_display }}{% if entry.order %} · #{{ entry.order.order_number }}{% endif %}</span><strong class="{% if entry.delta < 0 %}coin-negative{% else %}coin-positive{% endif %}">{% if entry.delta > 0 %}+{% endif %}{{ entry.delta }}</strong></li>
+                {% endfor %}
+            </ul>
+            {% else %}<p class="email-verification-note">Your completed order rewards will appear here.</p>{% endif %}
+        </section>
+        <section class="account-card referral-card" id="referrals">
+            <p class="section-kicker">SHARE AVATAR</p><h3>Refer a friend</h3>
+            <p>Share your code or link. {{ referral_count }} account{{ referral_count|pluralize }} signed up using your code.</p>
+            <label for="account-referral-code">Your referral code</label>
+            <input id="account-referral-code" class="form-control" type="text" readonly value="{{ customer.referral_code }}">
+            <label for="account-referral-link">Your referral link</label>
+            <input id="account-referral-link" class="form-control" type="url" readonly value="{{ referral_link }}">
+            {% if referral_reward_coins %}<small>Earn {{ referral_reward_coins }} coins when a referred customer's first order is delivered and paid.</small>{% else %}<small>Referral sign-ups are tracked. Referral coin bonuses are currently disabled and can be enabled with the REFERRAL_REWARD_COINS setting.</small>{% endif %}
+        </section>
     </div>
 
     <section class="account-card saved-addresses-card" id="saved-addresses">

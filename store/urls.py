@@ -8,6 +8,7 @@ urlpatterns = [
         path('robots.txt', views.robots_txt, name='robots_txt'),
         path('sitemap.xml', views.sitemap_xml, name='sitemap'),
         path('', views.store, name="store"),
+        path('campaigns/<int:campaign_id>/click/', views.sponsored_campaign_click, name='sponsored_campaign_click'),
         path('products/<int:product_id>/', views.product_detail, name="product_detail"),
         path('help/', views.help_center, name="help"),
         path('cart/', views.cart, name="cart"),

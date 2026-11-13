@@ -56,10 +56,13 @@ from .models import (
     ProductVisit,
     SavedAddress,
     SellerStore,
+    SponsoredCampaign,
+    SuperCoinEntry,
     WishlistItem,
     ShippingAddress,
 )
 from .utils import cartData, release_reserved_inventory
+from .rewards import coin_balance, grant_order_rewards, record_redemption, redeemed_discount, restore_redeemed_coins
 from .postal import PostalLookupError, validate_delivery_location
 from .sms import SMSProviderError, send_phone_otp, verify_phone_otp
 from .notifications import queue_order_update
@@ -314,8 +317,21 @@ def store(request):
             WishlistItem.objects.filter(customer=customer).values_list('product_id', flat=True)
         )
 
+    sponsored_campaigns = SponsoredCampaign.objects.filter(
+        active=True,
+        product__is_active=True,
+    ).filter(
+        Q(starts_at__isnull=True) | Q(starts_at__lte=timezone.now()),
+        Q(ends_at__isnull=True) | Q(ends_at__gt=timezone.now()),
+    ).select_related('product', 'product__seller_store')[:3]
+    sponsored_campaigns = list(sponsored_campaigns)
+    if sponsored_campaigns:
+        SponsoredCampaign.objects.filter(pk__in=[campaign.pk for campaign in sponsored_campaigns]).update(
+            impressions=F('impressions') + 1,
+        )
     context = {
         'products': products,
+        'sponsored_campaigns': sponsored_campaigns,
         'wishlist_product_ids': wishlist_product_ids,
         'category_sections': category_sections,
         'show_category_sections': show_category_sections,
@@ -643,6 +659,23 @@ def _sync_order_status(order):
         if order.delivered_at is None:
             order.delivered_at = timezone.now()
     order.save(update_fields=['status', 'delivered_at'])
+    if order.status == 'Delivered':
+        grant_order_rewards(order)
+
+
+@require_GET
+def sponsored_campaign_click(request, campaign_id):
+    campaign = get_object_or_404(
+        SponsoredCampaign.objects.select_related('product'),
+        pk=campaign_id,
+        active=True,
+        product__is_active=True,
+    )
+    now = timezone.now()
+    if campaign.starts_at and campaign.starts_at > now or campaign.ends_at and campaign.ends_at <= now:
+        raise Http404
+    SponsoredCampaign.objects.filter(pk=campaign.pk).update(clicks=F('clicks') + 1)
+    return redirect('product_detail', product_id=campaign.product_id)
 
 
 def _money(value):
@@ -828,6 +861,7 @@ def _checkout_context(request, error=''):
         product_id__in=[_line_value(item, 'product').id for item in data['items']],
     ).select_related('product').order_by('product__name', 'code')
     saved_addresses = SavedAddress.objects.none()
+    customer = None
     selected_saved_address = None
     selected_saved_address_id = ''
     if request.user.is_authenticated:
@@ -847,6 +881,8 @@ def _checkout_context(request, error=''):
             or request.session.get('verified_checkout_email', '')
             or request.session.get('pending_checkout_email', '')
         )
+    available_coin_balance = coin_balance(customer) if request.user.is_authenticated else 0
+    max_redeemable_coins = int(Decimal(str(breakdown['total'])) // Decimal('10')) * 100
     return {
         'items': breakdown['items'],
         'order': data['order'],
@@ -888,6 +924,10 @@ def _checkout_context(request, error=''):
         'available_coupons': available_coupons,
         'coupon_error': coupon_error,
         'error': error,
+        'super_coin_balance': available_coin_balance,
+        'redeemable_coin_limit': min(available_coin_balance, max_redeemable_coins),
+        'max_redeemable_coins': max_redeemable_coins,
+        'coins_to_redeem': request.POST.get('coins_to_redeem', '0'),
     }
 
 
@@ -1050,6 +1090,16 @@ def _create_order(request, payment_method):
         raise ValueError('PayPal is not configured yet. Choose another available method.')
     if payment_method == 'upi_manual' and not settings.AVATAR_UPI_ID:
         raise ValueError('Manual UPI payment is not configured.')
+
+    raw_coins = request.POST.get('coins_to_redeem', '0').strip() or '0'
+    try:
+        coins_requested = int(raw_coins)
+    except (TypeError, ValueError):
+        raise ValueError('Enter a valid number of Super Coins to redeem.')
+    if coins_requested < 0 or coins_requested % 100:
+        raise ValueError('Super Coins must be redeemed in multiples of 100.')
+    if coins_requested and not request.user.is_authenticated:
+        raise ValueError('Sign in to redeem your Super Coins.')
 
     if request.user.is_authenticated:
         customer = get_or_create_customer_for_user(request.user)
@@ -1251,18 +1301,31 @@ def _create_order(request, payment_method):
             platform_fee * Decimal(settings.PLATFORM_FEE_GST_RATE) / Decimal('100')
         )
         delivery_fee = Decimal('0.00')
-        total_amount = subtotal + product_gst + platform_fee + platform_fee_gst + delivery_fee
+        gross_total = subtotal + product_gst + platform_fee + platform_fee_gst + delivery_fee
+        if coins_requested:
+            available_coins = coin_balance(customer, lock=True)
+            max_redeemable = int(gross_total // Decimal('10')) * 100
+            if coins_requested > available_coins:
+                raise ValueError('You do not have enough Super Coins for this redemption.')
+            if coins_requested > max_redeemable:
+                raise ValueError('The selected Super Coins exceed this order total.')
+        coin_discount = redeemed_discount(coins_requested)
+        total_amount = gross_total - coin_discount
         order.coupon_discount = float(total_coupon_discount)
         order.gst_amount = float(product_gst)
         order.platform_fee = float(platform_fee)
         order.platform_fee_gst = float(platform_fee_gst)
         order.platform_fee_rate = platform_fee_rate
         order.delivery_fee = float(delivery_fee)
+        order.coins_redeemed = coins_requested
+        order.coin_discount = float(coin_discount)
         order.total_amount = float(total_amount)
         order.save(update_fields=[
             'coupon_discount', 'gst_amount', 'platform_fee', 'platform_fee_gst',
-            'platform_fee_rate', 'delivery_fee', 'total_amount',
+            'platform_fee_rate', 'delivery_fee', 'coins_redeemed', 'coin_discount', 'total_amount',
         ])
+        if coins_requested:
+            record_redemption(customer, order, coins_requested)
         if not request.user.is_authenticated:
             request.session.pop('pending_checkout_email', None)
             request.session.pop('verified_checkout_email', None)
@@ -1373,6 +1436,7 @@ def checkout(request):
                 order.status = 'Cancelled'
                 release_reserved_inventory(order)
                 order.save(update_fields=['payment_status', 'status'])
+            restore_redeemed_coins(order, 'payment setup failed')
             _restore_order_to_cart(order)
             return render(
                 request,
@@ -1451,6 +1515,7 @@ def payu_return(request):
         payment.save(update_fields=['status', 'gateway_payment_id', 'updated_at'])
 
     if gateway_status == 'success' and payment.status == 'paid':
+        grant_order_rewards(order)
         queue_order_update(
             order,
             f'order:{order.pk}:payment-paid',
@@ -1459,6 +1524,7 @@ def payu_return(request):
             _order_url(request, order),
         )
     elif gateway_status != 'success' and payment.status == 'failed':
+        restore_redeemed_coins(order, 'payment failed')
         queue_order_update(
             order,
             f'order:{order.pk}:payment-failed',
@@ -1518,6 +1584,7 @@ def paypal_return(request, token):
             order.save(update_fields=['payment_status', 'transaction_id', 'status'])
             payment.save(update_fields=['status', 'customer_reference', 'updated_at'])
     if payment.status == 'paid':
+        grant_order_rewards(order)
         queue_order_update(
             order,
             f'order:{order.pk}:payment-paid',
@@ -1548,6 +1615,7 @@ def paypal_cancel(request, token):
                 release_reserved_inventory(order)
             order.save(update_fields=['payment_status', 'status'])
     if payment_cancelled:
+        restore_redeemed_coins(order, 'PayPal payment cancelled')
         queue_order_update(
             order,
             f'order:{order.pk}:payment-failed',
@@ -1605,6 +1673,7 @@ def order_complete(request, token):
                 order.cancellation_reason = reason
                 release_reserved_inventory(order)
                 order.save(update_fields=['status', 'cancellation_reason'])
+                restore_redeemed_coins(order, 'order cancelled')
                 OrderFulfillment.objects.filter(order=order).update(
                     status='Cancelled', updated_at=timezone.now(),
                 )
@@ -1778,6 +1847,8 @@ def download_invoice(request, token):
     ]
     if order.coupon_discount:
         totals.append(['Seller coupon discount', f'- INR {order.coupon_discount:.2f}'])
+    if order.coin_discount:
+        totals.append([f'Super Coin redemption ({order.coins_redeemed} coins)', f'- INR {order.coin_discount:.2f}'])
     totals.extend([
         ['GST on products', f'INR {order.gst_amount:.2f}'],
         [f'Platform fee ({order.platform_fee_rate}%)', f'INR {order.platform_fee:.2f}'],
@@ -1814,6 +1885,23 @@ def download_invoice(request, token):
 def account(request):
     customer = get_or_create_customer_for_user(request.user)
     error = ''
+
+    def page_context(profile_error=''):
+        return {
+            'customer': customer,
+            'orders': Order.objects.filter(customer=customer, complete=True).order_by('-date_order'),
+            'saved_addresses': SavedAddress.objects.filter(customer=customer),
+            'cartItems': cartData(request)['cartItems'],
+            'profile_error': profile_error,
+            'super_coin_balance': coin_balance(customer),
+            'coin_entries': SuperCoinEntry.objects.filter(customer=customer)[:30],
+            'referral_count': customer.referrals.count(),
+            'referral_reward_coins': settings.REFERRAL_REWARD_COINS,
+            'referral_link': request.build_absolute_uri(
+                f"{reverse('register')}?ref={customer.referral_code}"
+            ),
+        }
+
     if request.method == 'POST' and request.POST.get('action') == 'update_profile':
         name = request.POST.get('name', '').strip()
         email = request.POST.get('email', '').strip()
@@ -1831,35 +1919,16 @@ def account(request):
                     phone_e164 = normalize_indian_phone(phone)
                 except ValueError:
                     error = 'Enter a valid 10-digit Indian mobile number for phone OTP login.'
-            if error:
-                orders = Order.objects.filter(customer=customer, complete=True).order_by('-date_order')
-                return render(request, 'store/account.html', {
-                    'customer': customer,
-                    'orders': orders,
-                    'saved_addresses': SavedAddress.objects.filter(customer=customer),
-                    'cartItems': cartData(request)['cartItems'],
-                    'profile_error': error,
-                })
-            if phone_e164 and Customer.objects.filter(phone_e164=phone_e164).exclude(pk=customer.pk).exists():
+            if not error and phone_e164 and Customer.objects.filter(
+                phone_e164=phone_e164,
+            ).exclude(pk=customer.pk).exists():
                 error = 'That phone number is already connected to another account.'
-                orders = Order.objects.filter(customer=customer, complete=True).order_by('-date_order')
-                return render(request, 'store/account.html', {
-                    'customer': customer,
-                    'orders': orders,
-                    'saved_addresses': SavedAddress.objects.filter(customer=customer),
-                    'cartItems': cartData(request)['cartItems'],
-                    'profile_error': error,
-                })
-            if User.objects.filter(email__iexact=email).exclude(pk=request.user.pk).exists():
+            if not error and User.objects.filter(email__iexact=email).exclude(
+                pk=request.user.pk,
+            ).exists():
                 error = 'That email address is already associated with another account.'
-                orders = Order.objects.filter(customer=customer, complete=True).order_by('-date_order')
-                return render(request, 'store/account.html', {
-                    'customer': customer,
-                    'orders': orders,
-                    'saved_addresses': SavedAddress.objects.filter(customer=customer),
-                    'cartItems': cartData(request)['cartItems'],
-                    'profile_error': error,
-                })
+            if error:
+                return render(request, 'store/account.html', page_context(error))
             request.user.first_name = name
             request.user.email = email
             request.user.save(update_fields=['first_name', 'email'])
@@ -1873,14 +1942,7 @@ def account(request):
             messages.success(request, 'Your profile was updated.')
             return redirect('account')
 
-    orders = Order.objects.filter(customer=customer, complete=True).order_by('-date_order')
-    return render(request, 'store/account.html', {
-        'customer': customer,
-        'orders': orders,
-        'saved_addresses': SavedAddress.objects.filter(customer=customer),
-        'cartItems': cartData(request)['cartItems'],
-        'profile_error': error,
-    })
+    return render(request, 'store/account.html', page_context(error))
 
 
 @login_required(login_url='login')
@@ -2294,6 +2356,7 @@ def order_action(request, order_id):
                 order.cancellation_reason = reason
                 release_reserved_inventory(order)
                 order.save(update_fields=['status', 'cancellation_reason'])
+                restore_redeemed_coins(order, 'order cancelled')
                 OrderFulfillment.objects.filter(order=order).update(
                     status='Cancelled', updated_at=timezone.now(),
                 )
@@ -2514,7 +2577,9 @@ def register_view(request, seller_portal=False):
         name = request.POST.get('first_name', '').strip()
         email = request.POST.get('email', '').strip()
         phone = request.POST.get('phone', '').strip()
+        referral_code = request.POST.get('referral_code', '').strip().upper()
         if form.is_valid():
+            referrer = None
             try:
                 validate_email(email)
                 if not name:
@@ -2524,6 +2589,13 @@ def register_view(request, seller_portal=False):
                     raise ValueError('An account already uses that email address.')
                 if phone_e164 and Customer.objects.filter(phone_e164=phone_e164).exists():
                     raise ValueError('That phone number is already connected to an account.')
+                if referral_code:
+                    referrer = Customer.objects.filter(
+                        referral_code__iexact=referral_code,
+                        user__isnull=False,
+                    ).first()
+                    if not referrer:
+                        raise ValueError('That referral code is not valid.')
             except (ValidationError, ValueError) as error:
                 form.add_error(None, str(error))
             else:
@@ -2535,7 +2607,8 @@ def register_view(request, seller_portal=False):
                 customer = get_or_create_customer_for_user(user)
                 customer.phone = phone_e164
                 customer.phone_e164 = phone_e164
-                customer.save(update_fields=['phone', 'phone_e164'])
+                customer.referred_by = referrer
+                customer.save(update_fields=['phone', 'phone_e164', 'referred_by'])
                 login(request, user)
                 messages.success(request, 'Your account is ready.')
                 return redirect('seller_dashboard' if seller_portal else 'account')
@@ -2543,7 +2616,11 @@ def register_view(request, seller_portal=False):
         form = UserCreationForm()
     return render(request, (
         'store/seller_register.html' if seller_portal else 'store/register.html'
-    ), {'form': form, 'seller_portal': seller_portal})
+    ), {
+        'form': form,
+        'seller_portal': seller_portal,
+        'referral_code': request.GET.get('ref', '').strip().upper(),
+    })
 
 
 def seller_register(request):

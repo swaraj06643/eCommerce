@@ -1,7 +1,10 @@
 {% extends 'store/main.html' %}
 {% load static %}
 {% block content %}
-<div class="row">
+<nav class="checkout-steps" aria-label="Checkout progress">
+    <span class="is-complete">1. Bag</span><span class="is-current">2. Delivery &amp; payment</span><span>3. Confirmation</span>
+</nav>
+<div class="row checkout-layout">
     <div class="col-lg-6">
         <div class="box-element">
             <h2>Delivery &amp; payment</h2>
@@ -32,6 +35,16 @@
                     {% if coupon_error %}<p class="seller-error" role="alert">{{ coupon_error }}</p>{% endif %}
                     {% if available_coupons %}<small>Available: {% for coupon in available_coupons %}<code>{{ coupon.code }}</code> ({{ coupon.discount_percent|floatformat:0 }}% off {{ coupon.product.name }}){% if not forloop.last %} · {% endif %}{% endfor %}</small>{% endif %}
                 </section>
+
+                {% if request.user.is_authenticated %}
+                <section class="coin-redemption" aria-labelledby="coin-redemption-title">
+                    <div><h3 id="coin-redemption-title">Use Super Coins</h3>
+                    <p>You have <strong>{{ super_coin_balance }}</strong> coins. Every 100 coins gives ₹10 off.</p></div>
+                    <label for="coins-to-redeem">Redeem coins (multiples of 100)</label>
+                    <input id="coins-to-redeem" class="form-control" type="number" name="coins_to_redeem" min="0" step="100" max="{{ redeemable_coin_limit }}" value="{{ coins_to_redeem|default:'0' }}" inputmode="numeric">
+                    <small>Coins are deducted only if this order is successfully placed. Cancelled or fully refunded orders restore redeemed coins.</small>
+                </section>
+                {% endif %}
 
                 {% if order.shipping %}
                 <hr>
@@ -123,7 +136,9 @@
             <p>Platform fee ({{ platform_fee_rate|floatformat:2 }}%): ₹{{ platform_fee|floatformat:2 }}</p>
             <p>GST on platform fee: ₹{{ platform_fee_gst|floatformat:2 }}</p>
             <p>Delivery: <strong>FREE</strong></p>
-            <h4>Total to pay: ₹{{ checkout_total|floatformat:2 }}</h4>
+            {% if request.user.is_authenticated and super_coin_balance %}<p class="checkout-discount">Super Coin savings: −₹<span id="coin-discount-preview">0.00</span></p>{% endif %}
+            <h4 id="checkout-total-preview" data-base-total="{{ checkout_total|floatformat:2 }}">Total to pay: ₹{{ checkout_total|floatformat:2 }}</h4>
+            {% if request.user.is_authenticated %}<small class="coin-earn-note">Successful paid orders earn 1 Super Coin per ₹1 paid after delivery.</small>{% endif %}
         </div>
     </div>
 </div>

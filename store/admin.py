@@ -22,6 +22,8 @@ from .models import (
     ReturnRequest,
     SellerStore,
     ShippingAddress,
+    SponsoredCampaign,
+    SuperCoinEntry,
 )
 from .notifications import queue_order_update
 from .refunds import (
@@ -31,6 +33,7 @@ from .refunds import (
     restock_return_items,
 )
 from .utils import release_reserved_inventory
+from .rewards import grant_order_rewards, restore_redeemed_coins
 
 
 class ProductVariantInline(admin.TabularInline):
@@ -112,6 +115,7 @@ class OrderAdmin(admin.ModelAdmin):
         'public_token', 'visitor_key', 'transaction_id', 'date_order', 'delivered_at',
         'coupon_code', 'coupon_discount', 'gst_amount', 'platform_fee',
         'platform_fee_gst', 'platform_fee_rate', 'delivery_fee', 'total_amount',
+        'coins_redeemed', 'coin_discount',
     )
     inlines = (OrderItemInline,)
     fieldsets = (
@@ -122,6 +126,7 @@ class OrderAdmin(admin.ModelAdmin):
         ('Discount and charges', {'fields': (
             'coupon_code', 'coupon_discount', 'gst_amount', 'platform_fee',
             'platform_fee_gst', 'platform_fee_rate', 'delivery_fee', 'total_amount',
+            'coins_redeemed', 'coin_discount',
         )}),
         ('Internal', {'fields': ('public_token', 'visitor_key', 'inventory_released')}),
     )
@@ -143,9 +148,13 @@ class OrderAdmin(admin.ModelAdmin):
                 'Store staff updated your order status.',
                 f'{settings.SITE_URL}{reverse("order_complete", args=[obj.public_token])}',
             )
+        if obj.status == 'Delivered':
+            grant_order_rewards(obj)
         if obj.status in ('Cancelled', 'Returned') and previous_status != obj.status:
             with transaction.atomic():
                 release_reserved_inventory(Order.objects.select_for_update().get(pk=obj.pk))
+            if obj.status == 'Cancelled':
+                restore_redeemed_coins(obj, 'order cancelled by staff')
 
 
 @admin.register(OrderFulfillment)
@@ -182,6 +191,26 @@ class PaymentAdmin(admin.ModelAdmin):
                     'Store staff updated your payment record.',
                     f'{settings.SITE_URL}{reverse("order_complete", args=[order.public_token])}',
                 )
+        if obj.status == 'paid':
+            grant_order_rewards(order)
+        elif obj.status == 'failed':
+            restore_redeemed_coins(order, 'payment failed')
+
+
+@admin.register(SponsoredCampaign)
+class SponsoredCampaignAdmin(admin.ModelAdmin):
+    list_display = ('display_title', 'product', 'active', 'starts_at', 'ends_at', 'impressions', 'clicks')
+    list_filter = ('active', 'starts_at', 'ends_at')
+    search_fields = ('title', 'product__name')
+    readonly_fields = ('impressions', 'clicks', 'created_at')
+
+
+@admin.register(SuperCoinEntry)
+class SuperCoinEntryAdmin(admin.ModelAdmin):
+    list_display = ('customer', 'entry_type', 'delta', 'order', 'event_key', 'created_at')
+    list_filter = ('entry_type', 'created_at')
+    search_fields = ('customer__name', 'customer__email', 'event_key', 'order__order_number')
+    readonly_fields = ('customer', 'order', 'delta', 'entry_type', 'event_key', 'note', 'created_at')
 
 
 @admin.register(OrderEmailNotification)

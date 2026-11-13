@@ -6,7 +6,12 @@ from django.core.validators import (
     MinLengthValidator,
     MinValueValidator,
 )
+import secrets
 import uuid
+
+
+def generate_referral_code():
+    return secrets.token_hex(5).upper()
 
 
 class Category(models.Model):
@@ -30,9 +35,64 @@ class Customer(models.Model):
     email_verified = models.BooleanField(default=False)
     phone = models.CharField(max_length=20, null=True, blank=True)
     phone_e164 = models.CharField(max_length=16, blank=True, default='', db_index=True)
+    referral_code = models.CharField(max_length=12, unique=True, default=generate_referral_code)
+    referred_by = models.ForeignKey(
+        'self', null=True, blank=True, related_name='referrals', on_delete=models.SET_NULL,
+    )
+
+    def save(self, *args, **kwargs):
+        if not self.referral_code:
+            self.referral_code = generate_referral_code()
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.name or self.email or str(self.id)
+
+
+class SuperCoinEntry(models.Model):
+    TYPE_CHOICES = [
+        ('earned', 'Order reward'),
+        ('redeemed', 'Checkout redemption'),
+        ('restored', 'Redemption restored'),
+        ('reversed', 'Reward reversed'),
+        ('referral', 'Referral reward'),
+        ('adjustment', 'Staff adjustment'),
+    ]
+    customer = models.ForeignKey(Customer, related_name='super_coin_entries', on_delete=models.CASCADE)
+    order = models.ForeignKey('Order', related_name='super_coin_entries', null=True, blank=True, on_delete=models.SET_NULL)
+    delta = models.IntegerField()
+    entry_type = models.CharField(max_length=16, choices=TYPE_CHOICES)
+    event_key = models.CharField(max_length=180, unique=True)
+    note = models.CharField(max_length=240, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ('-created_at', '-id')
+        indexes = [models.Index(fields=('customer', 'created_at'))]
+
+    def __str__(self):
+        return f'{self.customer}: {self.delta:+d} Super Coins ({self.entry_type})'
+
+
+class SponsoredCampaign(models.Model):
+    product = models.ForeignKey('Product', related_name='sponsored_campaigns', on_delete=models.CASCADE)
+    title = models.CharField(max_length=120, blank=True)
+    active = models.BooleanField(default=True)
+    starts_at = models.DateTimeField(null=True, blank=True)
+    ends_at = models.DateTimeField(null=True, blank=True)
+    impressions = models.PositiveIntegerField(default=0)
+    clicks = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ('-created_at',)
+
+    def __str__(self):
+        return self.title or f'Sponsored: {self.product.name}'
+
+    @property
+    def display_title(self):
+        return self.title or self.product.name
 
 
 class SellerStore(models.Model):
@@ -208,6 +268,8 @@ class Order(models.Model):
     platform_fee_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     delivery_fee = models.FloatField(default=0)
     total_amount = models.FloatField(null=True, blank=True)
+    coins_redeemed = models.PositiveIntegerField(default=0)
+    coin_discount = models.FloatField(default=0)
 
     def __str__(self):
         return str(self.order_number or self.id)

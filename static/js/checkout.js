@@ -3,6 +3,22 @@
     const pin = document.getElementById('checkout-pincode');
     const button = document.getElementById('checkout-postal-check');
     const message = document.getElementById('checkout-postal-message');
+    const coinInput = document.getElementById('coins-to-redeem');
+    const totalOutput = document.getElementById('checkout-total-preview');
+    const coinDiscount = document.getElementById('coin-discount-preview');
+
+    if (coinInput && totalOutput) {
+        const baseTotal = Number(totalOutput.dataset.baseTotal || 0);
+        const updateCoinPreview = () => {
+            const coins = Math.max(0, Number.parseInt(coinInput.value, 10) || 0);
+            const validCoins = coins % 100 === 0 && coins <= Number(coinInput.max || 0);
+            const savings = validCoins ? Math.min((coins / 100) * 10, baseTotal) : 0;
+            totalOutput.textContent = `Total to pay: ₹${(baseTotal - savings).toFixed(2)}`;
+            if (coinDiscount) coinDiscount.textContent = savings.toFixed(2);
+        };
+        coinInput.addEventListener('input', updateCoinPreview);
+        updateCoinPreview();
+    }
 
     if (!form || !pin || !button || !message) {
         return;
