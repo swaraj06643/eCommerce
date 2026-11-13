@@ -2,9 +2,14 @@ import math
 from decimal import Decimal
 
 from django import forms
-from django.core.validators import MinLengthValidator, MinValueValidator, MaxValueValidator, RegexValidator
+from django.core.validators import (
+    MinLengthValidator,
+    MinValueValidator,
+    MaxValueValidator,
+    RegexValidator,
+)
 
-from .models import Category, Product, ProductCoupon, SellerStore
+from .models import Category, Product, ProductCoupon, ProductReview, SellerStore
 
 
 class SellerStoreForm(forms.ModelForm):
@@ -53,7 +58,7 @@ class SellerProductForm(forms.ModelForm):
     class Meta:
         model = Product
         fields = (
-            'name', 'category', 'price', 'list_price', 'gst_rate', 'description', 'offer_text',
+            'name', 'brand', 'category', 'price', 'list_price', 'gst_rate', 'description', 'offer_text',
             'stock', 'low_stock_threshold', 'digital', 'is_active',
         )
         widgets = {
@@ -111,6 +116,28 @@ class SellerProductForm(forms.ModelForm):
         if existing_photo_count + len(cleaned_data.get('photos') or []) < 3:
             self.add_error('photos', 'A listing must have at least three product photos.')
         return cleaned_data
+
+
+class ProductReviewForm(forms.ModelForm):
+    class Meta:
+        model = ProductReview
+        fields = ('rating', 'title', 'body')
+        widgets = {
+            'rating': forms.Select(choices=((value, f'{value} star' if value == 1 else f'{value} stars') for value in range(1, 6))),
+            'title': forms.TextInput(attrs={'maxlength': 120, 'placeholder': 'Summarize your experience'}),
+            'body': forms.Textarea(attrs={
+                'rows': 4,
+                'maxlength': 2000,
+                'placeholder': 'What should other shoppers know about this product?',
+            }),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['rating'].label = 'Your rating'
+        self.fields['title'].label = 'Review title'
+        self.fields['body'].label = 'Your review'
+
 
 
 class ProductCouponForm(forms.ModelForm):

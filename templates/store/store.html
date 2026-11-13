@@ -32,6 +32,9 @@
                 {% elif selected_category_name %}
                 <p class="section-kicker">SHOP BY CATEGORY</p>
                 <h2>{{ selected_category_name }}</h2>
+                {% elif selected_brand_name %}
+                <p class="section-kicker">SHOP BY BRAND</p>
+                <h2>{{ selected_brand_name }}</h2>
                 {% else %}
                 <p class="section-kicker">A LITTLE BIT OF EVERYTHING</p>
                 <h2>Popular picks</h2>
@@ -62,12 +65,20 @@
                     {% endfor %}
                 </select>
             </label>
+            <label>Brand
+                <select name="brand">
+                    <option value="">All brands</option>
+                    {% for brand in brands %}
+                    <option value="{{ brand }}" {% if selected_brand == brand %}selected{% endif %}>{{ brand }}</option>
+                    {% endfor %}
+                </select>
+            </label>
             <label>Min price <input type="number" name="min_price" min="0" step="0.01" value="{{ min_price }}" placeholder="₹ Min"></label>
             <label>Max price <input type="number" name="max_price" min="0" step="0.01" value="{{ max_price }}" placeholder="₹ Max"></label>
             <label>Options <input type="search" name="variant" value="{{ variant_filter }}" placeholder="Color, size"></label>
             <label>Sort
                 <select name="sort">
-                    <option value="popular" {% if selected_sort == 'popular' %}selected{% endif %}>Name</option>
+                    <option value="popular" {% if selected_sort == 'popular' %}selected{% endif %}>Popular</option>
                     <option value="price_low" {% if selected_sort == 'price_low' %}selected{% endif %}>Price: low to high</option>
                     <option value="price_high" {% if selected_sort == 'price_high' %}selected{% endif %}>Price: high to low</option>
                 </select>
@@ -90,9 +101,17 @@
                             <div class="product-image-wrap">
                                 <a href="{% url 'product_detail' product.id %}" aria-label="View {{ product.name }} details"><img class="thumbnail" src="{{ product.imageURL }}" alt="{{ product.name }}"></a>
                                 {% if product.discount_percent %}<span class="product-tag">{{ product.discount_percent }}% OFF</span>{% endif %}
+                                {% if request.user.is_authenticated %}
+                                <form class="wishlist-card-form" method="post" action="{% url 'wishlist_toggle' %}">
+                                    {% csrf_token %}<input type="hidden" name="product_id" value="{{ product.id }}"><input type="hidden" name="next" value="{{ request.get_full_path }}">
+                                    <button type="submit" aria-label="{% if product.id in wishlist_product_ids %}Remove {{ product.name }} from wishlist{% else %}Save {{ product.name }} to wishlist{% endif %}" aria-pressed="{% if product.id in wishlist_product_ids %}true{% else %}false{% endif %}">{% if product.id in wishlist_product_ids %}♥{% else %}♡{% endif %}</button>
+                                </form>
+                                {% else %}
+                                <a class="wishlist-card-form wishlist-login-link" href="{% url 'login' %}?next={{ request.get_full_path|urlencode }}" aria-label="Sign in to save {{ product.name }} to your wishlist">♡</a>
+                                {% endif %}
                             </div>
                             <div class="product-info">
-                                <p class="product-category">{{ section.name }}</p>
+                                <p class="product-category">{{ section.name }}{% if product.brand %} · {{ product.brand }}{% endif %}</p>
                                 <h3><a class="product-title-link" href="{% url 'product_detail' product.id %}">{{ product.name }}</a></h3>
                                 <div class="product-bottom">
                                     <div class="product-price-group"><strong class="product-price">&#8377;{{ product.price|floatformat:2 }}</strong>{% if product.list_price and product.list_price > product.price %}<del class="product-list-price">&#8377;{{ product.list_price|floatformat:2 }}</del>{% endif %}</div>
@@ -117,9 +136,17 @@
                     <div class="product-image-wrap">
                         <a href="{% url 'product_detail' product.id %}" aria-label="View {{ product.name }} details"><img class="thumbnail" src="{{ product.imageURL }}" alt="{{ product.name }}"></a>
                         {% if product.discount_percent %}<span class="product-tag">{{ product.discount_percent }}% OFF</span>{% endif %}
+                        {% if request.user.is_authenticated %}
+                        <form class="wishlist-card-form" method="post" action="{% url 'wishlist_toggle' %}">
+                            {% csrf_token %}<input type="hidden" name="product_id" value="{{ product.id }}"><input type="hidden" name="next" value="{{ request.get_full_path }}">
+                            <button type="submit" aria-label="{% if product.id in wishlist_product_ids %}Remove {{ product.name }} from wishlist{% else %}Save {{ product.name }} to wishlist{% endif %}" aria-pressed="{% if product.id in wishlist_product_ids %}true{% else %}false{% endif %}">{% if product.id in wishlist_product_ids %}♥{% else %}♡{% endif %}</button>
+                        </form>
+                        {% else %}
+                        <a class="wishlist-card-form wishlist-login-link" href="{% url 'login' %}?next={{ request.get_full_path|urlencode }}" aria-label="Sign in to save {{ product.name }} to your wishlist">♡</a>
+                        {% endif %}
                     </div>
                     <div class="product-info">
-                        {% if product.category %}<p class="product-category">{{ product.category.name }}</p>{% endif %}
+                        {% if product.category or product.brand %}<p class="product-category">{% if product.category %}{{ product.category.name }}{% endif %}{% if product.category and product.brand %} · {% endif %}{{ product.brand }}</p>{% endif %}
                         <h3><a class="product-title-link" href="{% url 'product_detail' product.id %}">{{ product.name }}</a></h3>
                         <div class="product-bottom">
                             <div class="product-price-group"><strong class="product-price">&#8377;{{ product.price|floatformat:2 }}</strong>{% if product.list_price and product.list_price > product.price %}<del class="product-list-price">&#8377;{{ product.list_price|floatformat:2 }}</del>{% endif %}</div>

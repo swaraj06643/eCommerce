@@ -10,7 +10,45 @@
 
     const city = form.querySelector('[name="city"]');
     const state = form.querySelector('[name="state"]');
+    const address = form.querySelector('[name="address"]');
+    const phone = form.querySelector('[name="phone"]');
+    const savedAddressSelect = form.querySelector('[name="saved_address_id"]');
+    const saveAddressCheck = document.getElementById('save-address-check');
+    const savedAddressLabel = document.getElementById('saved-address-label-field');
     const csrfToken = form.querySelector('[name="csrfmiddlewaretoken"]').value;
+
+    if (savedAddressSelect) {
+        savedAddressSelect.addEventListener('change', () => {
+            const selected = savedAddressSelect.selectedOptions[0];
+            if (!savedAddressSelect.value) {
+                [address, city, state, pin, phone].forEach((field) => {
+                    if (field) field.value = '';
+                });
+                return;
+            }
+            address.value = selected.dataset.address || '';
+            city.value = selected.dataset.city || '';
+            state.value = selected.dataset.state || '';
+            pin.value = selected.dataset.zipcode || '';
+            phone.value = selected.dataset.phone || phone.value;
+        });
+        [address, city, state, pin, phone].forEach((field) => {
+            if (field) {
+                field.addEventListener('input', () => {
+                    if (savedAddressSelect.value) savedAddressSelect.value = '';
+                });
+                field.addEventListener('change', () => {
+                    if (savedAddressSelect.value) savedAddressSelect.value = '';
+                });
+            }
+        });
+    }
+
+    if (saveAddressCheck && savedAddressLabel) {
+        saveAddressCheck.addEventListener('change', () => {
+            savedAddressLabel.hidden = !saveAddressCheck.checked;
+        });
+    }
 
     button.addEventListener('click', async () => {
         if (!pin.reportValidity()) {

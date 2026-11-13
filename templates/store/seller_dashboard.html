@@ -101,7 +101,7 @@
             {% if product.imageURL %}<img class="seller-product-thumb" src="{{ product.imageURL }}" alt="{{ product.name }}">{% endif %}
             <div class="seller-product-name">
                 <strong>{{ product.name }}</strong>
-                <small>{% if product.category %}{{ product.category.name }} · {% endif %}₹{{ product.price|floatformat:2 }}</small>
+                <small>{% if product.category %}{{ product.category.name }} · {% endif %}{% if product.brand %}{{ product.brand }} · {% endif %}₹{{ product.price|floatformat:2 }}</small>
             </div>
             <span class="seller-stock">
                 {% if not product.is_active %}Hidden

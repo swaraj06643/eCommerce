@@ -1,0 +1,41 @@
+{% extends 'store/main.html' %}
+{% block title %}My Wishlist | Avatar Store{% endblock title %}
+{% block content %}
+<section class="wishlist-page">
+    <div class="collection-heading">
+        <div>
+            <p class="section-kicker">SAVED FOR LATER</p>
+            <h1>My wishlist</h1>
+        </div>
+        <a href="{% url 'store' %}">Continue shopping</a>
+    </div>
+    {% if items %}
+    <div class="row product-grid">
+        {% for item in items %}
+        <div class="col-lg-3 col-md-4 col-sm-6 product-column">
+            <article class="product-card wishlist-product-card">
+                <a href="{% url 'product_detail' item.product.id %}" aria-label="View {{ item.product.name }} details">
+                    <img class="thumbnail" src="{{ item.product.imageURL }}" alt="{{ item.product.name }}">
+                </a>
+                <div class="product-info">
+                    {% if item.product.category %}<p class="product-category">{{ item.product.category.name }}</p>{% endif %}
+                    <h2><a class="product-title-link" href="{% url 'product_detail' item.product.id %}">{{ item.product.name }}</a></h2>
+                    <strong class="product-price">&#8377;{{ item.product.price|floatformat:2 }}</strong>
+                    <p class="wishlist-stock-note">{% if item.product.is_out_of_stock %}Currently out of stock{% else %}Saved {{ item.created_at|date:'M j, Y' }}{% endif %}</p>
+                    <form method="post" action="{% url 'wishlist_toggle' %}">
+                        {% csrf_token %}<input type="hidden" name="product_id" value="{{ item.product.id }}"><input type="hidden" name="next" value="{% url 'wishlist' %}">
+                        <button type="submit" class="wishlist-remove-button">Remove from wishlist</button>
+                    </form>
+                </div>
+            </article>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state wishlist-empty">
+        <p>Your wishlist is empty. Save products you like and find them here later.</p>
+        <a class="hero-cta" href="{% url 'store' %}">Browse products</a>
+    </div>
+    {% endif %}
+</section>
+{% endblock content %}

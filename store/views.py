@@ -23,13 +23,15 @@ from django.contrib.auth.hashers import check_password, make_password
 from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
 from django.db import transaction
-from django.db.models import F, Q, Sum
-from django.http import FileResponse, HttpResponse, HttpResponseBadRequest, JsonResponse
+from django.db.models import Avg, Count, F, IntegerField, OuterRef, Q, Subquery, Sum, Value
+from django.http import FileResponse, Http404, HttpResponse, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse, reverse_lazy
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
+from django.views.decorators.http import require_POST
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
@@ -42,19 +44,25 @@ from .models import (
     OrderFulfillment,
     OrderItem,
     Payment,
+    Refund,
+    ReturnRequest,
     PhoneOTPRequest,
     Product,
     ProductCoupon,
     ProductImage,
+    ProductReview,
     ProductVariant,
     ProductVisit,
+    SavedAddress,
     SellerStore,
+    WishlistItem,
     ShippingAddress,
 )
 from .utils import cartData, release_reserved_inventory
 from .postal import PostalLookupError, validate_delivery_location
 from .sms import SMSProviderError, send_phone_otp, verify_phone_otp
-from .forms import ProductCouponForm, SellerProductForm, SellerStoreForm
+from .notifications import queue_order_update
+from .forms import ProductCouponForm, ProductReviewForm, SellerProductForm, SellerStoreForm
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
@@ -212,14 +220,25 @@ def store(request):
     ).prefetch_related('variants', 'coupons')
     search_query = request.GET.get('q', '').strip()
     category_slug = request.GET.get('category', '').strip()
+    requested_brand = request.GET.get('brand', '').strip()
+    brands = Product.objects.filter(is_active=True).exclude(brand='').order_by('brand').values_list('brand', flat=True).distinct()
+    brand_filter = (
+        brands.filter(brand__iexact=requested_brand).first() or requested_brand
+        if requested_brand
+        else ''
+    )
     variant_filter = request.GET.get('variant', '').strip()
 
     if search_query:
         products = products.filter(
-            Q(name__icontains=search_query) | Q(description__icontains=search_query)
+            Q(name__icontains=search_query)
+            | Q(brand__icontains=search_query)
+            | Q(description__icontains=search_query)
         )
     if category_slug:
         products = products.filter(category__slug=category_slug, category__active=True)
+    if brand_filter:
+        products = products.filter(brand__iexact=brand_filter)
     if variant_filter:
         products = products.filter(variants__active=True, variants__value__icontains=variant_filter)
 
@@ -245,11 +264,22 @@ def store(request):
     elif sort == 'price_high':
         products = products.order_by('-price', 'name')
     else:
-        products = products.order_by('name')
+        sold_units = OrderItem.objects.filter(
+            product_id=OuterRef('pk'),
+            order__complete=True,
+            order__status__in=(
+                'Placed', 'Packed', 'Dispatched', 'Shipped', 'Out for Delivery', 'Delivered',
+            ),
+        ).values('product_id').annotate(total=Sum('quantity')).values('total')[:1]
+        products = products.annotate(
+            sold_units=Coalesce(Subquery(sold_units, output_field=IntegerField()), Value(0)),
+            wishlist_saves=Count('wishlisted_by', distinct=True),
+            product_visits=Count('productvisit', distinct=True),
+        ).order_by('-sold_units', '-wishlist_saves', '-product_visits', 'name')
 
     products = products.distinct()
     category_sections = []
-    show_category_sections = not search_query and not category_slug
+    show_category_sections = not search_query and not category_slug and not brand_filter
     if show_category_sections:
         catalog_products = list(products)
         products_by_category = {}
@@ -275,18 +305,29 @@ def store(request):
                 'products': uncategorized[:4],
             })
 
+    wishlist_product_ids = set()
+    if request.user.is_authenticated:
+        customer = get_or_create_customer_for_user(request.user)
+        wishlist_product_ids = set(
+            WishlistItem.objects.filter(customer=customer).values_list('product_id', flat=True)
+        )
+
     context = {
         'products': products,
+        'wishlist_product_ids': wishlist_product_ids,
         'category_sections': category_sections,
         'show_category_sections': show_category_sections,
         'cartItems': data['cartItems'],
         'search_term': search_query,
         'categories': Category.objects.filter(active=True),
+        'brands': brands,
         'selected_category': category_slug,
+        'selected_brand': brand_filter,
         'selected_category_name': Category.objects.filter(
             slug=category_slug,
             active=True,
         ).values_list('name', flat=True).first(),
+        'selected_brand_name': brand_filter,
         'variant_filter': variant_filter,
         'min_price': minimum,
         'max_price': maximum,
@@ -312,6 +353,53 @@ def product_detail(request, product_id):
     has_offer = list_price is not None and product.price is not None and list_price > product.price
     discount_percent = round((list_price - product.price) / list_price * 100) if has_offer else 0
     variants = product.variants.filter(active=True)
+
+    customer = get_or_create_customer_for_user(request.user)
+    eligible_orders = Order.objects.none()
+    existing_review = None
+    is_seller_owner = bool(
+        product.seller_store_id
+        and product.seller_store.owner_id == getattr(request.user, 'id', None)
+    )
+    if customer:
+        eligible_orders = Order.objects.filter(
+            customer=customer,
+            status='Delivered',
+            orderitem__product=product,
+        ).distinct().order_by('-delivered_at', '-date_order')
+        if not is_seller_owner:
+            existing_review = ProductReview.objects.filter(
+                customer=customer,
+                product=product,
+            ).first()
+
+    can_review = bool(eligible_orders.exists() and not is_seller_owner)
+    review_form = ProductReviewForm(instance=existing_review) if can_review else None
+    if request.method == 'POST':
+        if not request.user.is_authenticated:
+            messages.info(request, 'Sign in with the account that received this order to leave a review.')
+            return redirect(f'{reverse("login")}?{urlencode({"next": request.path})}')
+        if not can_review:
+            messages.error(request, 'Only customers with a delivered order can review this product.')
+            return redirect(f'{reverse("product_detail", args=[product.id])}#reviews')
+
+        review_form = ProductReviewForm(request.POST, instance=existing_review)
+        if review_form.is_valid():
+            review = review_form.save(commit=False)
+            review.customer = customer
+            review.product = product
+            review.order = eligible_orders.first()
+            review.save()
+            messages.success(request, 'Your product review has been saved.')
+            return redirect(f'{reverse("product_detail", args=[product.id])}#reviews')
+
+    reviews = ProductReview.objects.filter(product=product).select_related(
+        'customer__user',
+    )[:20]
+    review_summary = ProductReview.objects.filter(product=product).aggregate(
+        average_rating=Avg('rating'),
+        review_count=Count('id'),
+    )
     return render(request, 'store/product_detail.html', {
         'product': product,
         'variants': variants,
@@ -320,7 +408,56 @@ def product_detail(request, product_id):
         'discount_percent': discount_percent,
         'coupons': product.coupons.filter(active=True).order_by('code'),
         'visitor_key': visitor_key,
+        'is_wishlisted': bool(
+            customer and WishlistItem.objects.filter(customer=customer, product=product).exists()
+        ),
+        'reviews': reviews,
+        'average_rating': review_summary['average_rating'],
+        'review_count': review_summary['review_count'],
+        'can_review': can_review,
+        'is_seller_owner': is_seller_owner,
+        'review_form': review_form,
+        'existing_review': existing_review,
     })
+
+
+@login_required(login_url='login')
+def wishlist(request):
+    customer = get_or_create_customer_for_user(request.user)
+    items = WishlistItem.objects.filter(
+        customer=customer,
+        product__is_active=True,
+    ).select_related('product', 'product__category', 'product__seller_store')
+    return render(request, 'store/wishlist.html', {
+        'items': items,
+        'cartItems': cartData(request)['cartItems'],
+    })
+
+
+@login_required(login_url='login')
+@require_POST
+def wishlist_toggle(request):
+    try:
+        product_id = int(request.POST.get('product_id', ''))
+    except (TypeError, ValueError):
+        raise Http404
+    product = get_object_or_404(Product, pk=product_id, is_active=True)
+    customer = get_or_create_customer_for_user(request.user)
+    item, created = WishlistItem.objects.get_or_create(customer=customer, product=product)
+    if not created:
+        item.delete()
+        messages.success(request, f'{product.name} was removed from your wishlist.')
+    else:
+        messages.success(request, f'{product.name} was saved to your wishlist.')
+
+    next_url = request.POST.get('next', '')
+    if not url_has_allowed_host_and_scheme(
+        next_url,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
+    ):
+        next_url = reverse('wishlist')
+    return redirect(next_url)
 
 
 def service_worker(request):
@@ -381,6 +518,11 @@ def _cancellation_reason(request):
             return '', 'Please briefly explain the other cancellation reason.'
         return f'Other: {detail[:900]}', ''
     return reasons[reason_code], ''
+
+
+def _order_url(request, order):
+    path = reverse('order_complete', args=[order.public_token])
+    return request.build_absolute_uri(path) if request else f'{settings.SITE_URL}{path}'
 
 
 def _sync_order_status(order):
@@ -579,9 +721,20 @@ def _checkout_context(request, error=''):
         active=True,
         product_id__in=[_line_value(item, 'product').id for item in data['items']],
     ).select_related('product').order_by('product__name', 'code')
+    saved_addresses = SavedAddress.objects.none()
+    selected_saved_address = None
+    selected_saved_address_id = ''
     if request.user.is_authenticated:
         customer = get_or_create_customer_for_user(request.user)
         email = customer.email or request.user.email
+        saved_addresses = SavedAddress.objects.filter(customer=customer)
+        requested_address_id = request.POST.get('saved_address_id', '').strip()
+        if request.method == 'GET':
+            selected_saved_address = saved_addresses.filter(is_default=True).first() or saved_addresses.first()
+        elif requested_address_id.isdigit():
+            selected_saved_address = saved_addresses.filter(pk=int(requested_address_id)).first()
+        if selected_saved_address:
+            selected_saved_address_id = str(selected_saved_address.pk)
     else:
         email = (
             request.POST.get('email', '').strip()
@@ -598,11 +751,23 @@ def _checkout_context(request, error=''):
         'upi_id': settings.AVATAR_UPI_ID,
         'checkout_email': email,
         'checkout_name': request.POST.get('name', ''),
-        'checkout_phone': request.POST.get('phone', ''),
-        'checkout_address': request.POST.get('address', ''),
-        'checkout_city': request.POST.get('city', ''),
-        'checkout_state': request.POST.get('state', ''),
-        'checkout_zipcode': request.POST.get('zipcode', ''),
+        'checkout_phone': request.POST.get('phone', '') or (
+            selected_saved_address.phone if selected_saved_address else ''
+        ),
+        'checkout_address': (
+            selected_saved_address.address if selected_saved_address else request.POST.get('address', '')
+        ),
+        'checkout_city': (
+            selected_saved_address.city if selected_saved_address else request.POST.get('city', '')
+        ),
+        'checkout_state': (
+            selected_saved_address.state if selected_saved_address else request.POST.get('state', '')
+        ),
+        'checkout_zipcode': (
+            selected_saved_address.zipcode if selected_saved_address else request.POST.get('zipcode', '')
+        ),
+        'saved_addresses': saved_addresses,
+        'selected_saved_address_id': selected_saved_address_id,
         'selected_payment_method': request.POST.get('payment_method', ''),
         'coupon_code': coupon.code if coupon else coupon_code,
         'coupon_discount': breakdown['coupon_discount'],
@@ -801,7 +966,26 @@ def _create_order(request, payment_method):
         except ValidationError:
             raise ValueError('Enter a valid email address.')
 
-    phone = request.POST.get('phone', '').strip() or (customer.phone if customer else '') or ''
+    saved_address = None
+    saved_address_id = request.POST.get('saved_address_id', '').strip()
+    if saved_address_id:
+        if not customer:
+            raise ValueError('Sign in to use a saved delivery address.')
+        if not saved_address_id.isdigit():
+            raise ValueError('Choose a valid saved delivery address.')
+        saved_address = SavedAddress.objects.filter(
+            pk=int(saved_address_id),
+            customer=customer,
+        ).first()
+        if not saved_address:
+            raise ValueError('That saved address is not available on your account.')
+
+    phone = (
+        request.POST.get('phone', '').strip()
+        or (saved_address.phone if saved_address else '')
+        or (customer.phone if customer else '')
+        or ''
+    )
     if not re.fullmatch(r'\+?[0-9][0-9 -]{7,17}[0-9]', phone):
         raise ValueError('Enter a valid contact phone number.')
     digits = re.sub(r'\D', '', phone)
@@ -809,10 +993,10 @@ def _create_order(request, payment_method):
         raise ValueError('Enter a valid contact phone number.')
 
 
-    address = request.POST.get('address', '').strip()
-    city = request.POST.get('city', '').strip()
-    state = request.POST.get('state', '').strip()
-    zipcode = request.POST.get('zipcode', '').strip()
+    address = saved_address.address if saved_address else request.POST.get('address', '').strip()
+    city = saved_address.city if saved_address else request.POST.get('city', '').strip()
+    state = saved_address.state if saved_address else request.POST.get('state', '').strip()
+    zipcode = saved_address.zipcode if saved_address else request.POST.get('zipcode', '').strip()
     physical_items = [
         line for line in lines
         if _line_value(line, 'digital', getattr(_line_value(line, 'product'), 'digital', False)) is False
@@ -939,6 +1123,21 @@ def _create_order(request, payment_method):
                 state=state,
                 zipcode=zipcode,
             )
+            if customer and request.POST.get('save_address') == 'on':
+                is_first_address = not SavedAddress.objects.filter(customer=customer).exists()
+                SavedAddress.objects.update_or_create(
+                    customer=customer,
+                    address=address,
+                    city=city,
+                    state=state,
+                    zipcode=zipcode,
+                    defaults={
+                        'label': request.POST.get('address_label', '').strip()[:50] or 'Home',
+                        'recipient_name': name,
+                        'phone': phone,
+                        'is_default': is_first_address or bool(saved_address and saved_address.is_default),
+                    },
+                )
 
         platform_fee_rate = Decimal(settings.PLATFORM_FEE_PERCENT)
         platform_fee = _money(subtotal * platform_fee_rate / Decimal('100'))
@@ -1001,6 +1200,13 @@ def checkout(request):
     except ValueError as error:
         return render(request, 'store/checkout.html', _checkout_context(request, str(error)), status=400)
 
+    queue_order_update(
+        order,
+        f'order:{order.pk}:placed',
+        order.status,
+        'We received your order. You can use the order page to follow shipment and payment updates.',
+        _order_url(request, order),
+    )
     response = None
     if payment.method == 'payu':
         amount = f'{payment.amount:.2f}'
@@ -1118,10 +1324,10 @@ def payu_return(request):
     ):
         return HttpResponseBadRequest('Payment verification failed.')
 
+    gateway_status = request.POST.get('status', '').lower()
     with transaction.atomic():
         payment = Payment.objects.select_for_update().select_related('order').get(pk=payment.pk)
         order = Order.objects.select_for_update().get(pk=payment.order_id)
-        gateway_status = request.POST.get('status', '').lower()
         if gateway_status == 'success' and payment.status != 'paid':
             payment.status = 'paid'
             payment.gateway_payment_id = request.POST.get('mihpayid', '')
@@ -1138,6 +1344,22 @@ def payu_return(request):
             order.save(update_fields=['payment_status', 'status'])
         payment.save(update_fields=['status', 'gateway_payment_id', 'updated_at'])
 
+    if gateway_status == 'success' and payment.status == 'paid':
+        queue_order_update(
+            order,
+            f'order:{order.pk}:payment-paid',
+            'Payment confirmed',
+            'Your payment was confirmed by PayU.',
+            _order_url(request, order),
+        )
+    elif gateway_status != 'success' and payment.status == 'failed':
+        queue_order_update(
+            order,
+            f'order:{order.pk}:payment-failed',
+            'Payment failed',
+            'The payment provider did not confirm payment for this order.',
+            _order_url(request, order),
+        )
     return redirect('order_complete', token=payment.order.public_token)
 
 
@@ -1189,11 +1411,20 @@ def paypal_return(request, token):
                 order.status = 'Placed'
             order.save(update_fields=['payment_status', 'transaction_id', 'status'])
             payment.save(update_fields=['status', 'customer_reference', 'updated_at'])
+    if payment.status == 'paid':
+        queue_order_update(
+            order,
+            f'order:{order.pk}:payment-paid',
+            'Payment confirmed',
+            'Your payment was confirmed by PayPal.',
+            _order_url(request, order),
+        )
     return redirect('order_complete', token=order.public_token)
 
 
 def paypal_cancel(request, token):
     order = get_object_or_404(Order, public_token=token)
+    payment_cancelled = False
     with transaction.atomic():
         order = Order.objects.select_for_update().get(pk=order.pk)
         payment = Payment.objects.select_for_update().filter(
@@ -1202,6 +1433,7 @@ def paypal_cancel(request, token):
             status='pending',
         ).first()
         if payment:
+            payment_cancelled = True
             payment.status = 'failed'
             payment.save(update_fields=['status', 'updated_at'])
             order.payment_status = 'failed'
@@ -1209,6 +1441,14 @@ def paypal_cancel(request, token):
                 order.status = 'Cancelled'
                 release_reserved_inventory(order)
             order.save(update_fields=['payment_status', 'status'])
+    if payment_cancelled:
+        queue_order_update(
+            order,
+            f'order:{order.pk}:payment-failed',
+            'Payment not completed',
+            'PayPal checkout was cancelled. No payment was recorded.',
+            _order_url(request, order),
+        )
     messages.info(request, 'PayPal checkout was cancelled. No payment was recorded.')
     return redirect('order_complete', token=order.public_token)
 
@@ -1235,6 +1475,13 @@ def order_complete(request, token):
         payment.save(update_fields=['customer_reference', 'status', 'updated_at'])
         order.payment_status = 'pending_review'
         order.save(update_fields=['payment_status'])
+        queue_order_update(
+            order,
+            f'order:{order.pk}:upi-reference-submitted',
+            'UPI reference received',
+            'Your transfer reference is waiting for staff verification. This is not yet a confirmed payment.',
+            _order_url(request, order),
+        )
         messages.success(request, 'Your UPI reference was sent for verification.')
         return redirect('order_complete', token=token)
     if request.method == 'POST' and request.POST.get('action'):
@@ -1255,16 +1502,41 @@ def order_complete(request, token):
                 OrderFulfillment.objects.filter(order=order).update(
                     status='Cancelled', updated_at=timezone.now(),
                 )
-                messages.success(request, 'Cancellation recorded. Paid orders require staff refund processing.')
+                queue_order_update(
+                    order,
+                    f'order:{order.pk}:cancelled',
+                    'Cancelled',
+                    'Your cancellation was recorded. Any refund is tracked separately from this status update.',
+                    _order_url(request, order),
+                )
+                messages.success(request, 'Your cancellation request was recorded. Paid orders require staff refund processing.')
             elif (
                 action == 'return'
                 and order.status == 'Delivered'
                 and order.delivered_at
                 and timezone.now() - order.delivered_at <= timedelta(days=7)
+                and not ReturnRequest.objects.filter(order=order).exists()
             ):
+                request_type = request.POST.get('request_type', 'refund')
+                if request_type not in dict(ReturnRequest.TYPE_CHOICES):
+                    messages.error(request, 'Choose refund or exchange for your return request.')
+                    return redirect('order_complete', token=token)
                 order.status = 'Return Requested'
                 order.return_reason = reason
                 order.save(update_fields=['status', 'return_reason'])
+                ReturnRequest.objects.create(
+                    order=order,
+                    customer=order.customer,
+                    request_type=request_type,
+                    reason=reason,
+                )
+                queue_order_update(
+                    order,
+                    f'order:{order.pk}:return-requested',
+                    'Return requested',
+                    f'Your {request_type} request was received and is waiting for review.',
+                    _order_url(request, order),
+                )
                 messages.success(request, 'Your return request was sent for review.')
             else:
                 messages.error(request, 'This order is not eligible for that request.')
@@ -1273,6 +1545,7 @@ def order_complete(request, token):
     return render(request, 'store/order_complete.html', {
         'order': order,
         'payment': payment,
+        'return_request': ReturnRequest.objects.filter(order=order).first(),
         'items': order.orderitem_set.select_related('product', 'variant').all(),
         'fulfillments': order.fulfillments.select_related('seller_store').all(),
         'invoice_available': (
@@ -1457,6 +1730,7 @@ def account(request):
                 return render(request, 'store/account.html', {
                     'customer': customer,
                     'orders': orders,
+                    'saved_addresses': SavedAddress.objects.filter(customer=customer),
                     'cartItems': cartData(request)['cartItems'],
                     'profile_error': error,
                 })
@@ -1466,6 +1740,7 @@ def account(request):
                 return render(request, 'store/account.html', {
                     'customer': customer,
                     'orders': orders,
+                    'saved_addresses': SavedAddress.objects.filter(customer=customer),
                     'cartItems': cartData(request)['cartItems'],
                     'profile_error': error,
                 })
@@ -1475,6 +1750,7 @@ def account(request):
                 return render(request, 'store/account.html', {
                     'customer': customer,
                     'orders': orders,
+                    'saved_addresses': SavedAddress.objects.filter(customer=customer),
                     'cartItems': cartData(request)['cartItems'],
                     'profile_error': error,
                 })
@@ -1495,9 +1771,41 @@ def account(request):
     return render(request, 'store/account.html', {
         'customer': customer,
         'orders': orders,
+        'saved_addresses': SavedAddress.objects.filter(customer=customer),
         'cartItems': cartData(request)['cartItems'],
         'profile_error': error,
     })
+
+
+@login_required(login_url='login')
+@require_POST
+def saved_address_action(request, address_id):
+    customer = get_or_create_customer_for_user(request.user)
+    saved_address = get_object_or_404(
+        SavedAddress,
+        pk=address_id,
+        customer=customer,
+    )
+    action = request.POST.get('action')
+    if action == 'delete':
+        was_default = saved_address.is_default
+        with transaction.atomic():
+            saved_address.delete()
+            if was_default:
+                replacement = SavedAddress.objects.filter(customer=customer).first()
+                if replacement:
+                    replacement.is_default = True
+                    replacement.save(update_fields=['is_default', 'updated_at'])
+        messages.success(request, 'Saved address removed.')
+    elif action == 'set_default':
+        with transaction.atomic():
+            SavedAddress.objects.filter(customer=customer).update(is_default=False)
+            saved_address.is_default = True
+            saved_address.save(update_fields=['is_default', 'updated_at'])
+        messages.success(request, 'Default delivery address updated.')
+    else:
+        return HttpResponseBadRequest('Unknown saved address action.')
+    return redirect('account')
 
 
 @login_required(login_url='login')
@@ -1602,6 +1910,7 @@ def seller_dashboard(request):
                     if parsed_tracking_url.scheme != 'https' or not parsed_tracking_url.hostname:
                         messages.error(request, 'Tracking links must use a valid HTTPS URL.')
                         return redirect('seller_dashboard')
+                previous_fulfillment_status = fulfillment.status
                 fulfillment.status = requested_status
                 fulfillment.shipping_partner = request.POST.get('shipping_partner', '').strip()[:100]
                 fulfillment.tracking_number = request.POST.get('tracking_number', '').strip()[:100]
@@ -1613,6 +1922,15 @@ def seller_dashboard(request):
                     'tracking_url', 'delivered_at', 'updated_at',
                 ])
                 _sync_order_status(order)
+                if requested_status != previous_fulfillment_status:
+                    queue_order_update(
+                        order,
+                        f'order:{order.pk}:fulfillment:{fulfillment.pk}:{requested_status}',
+                        requested_status,
+                        f'{seller_store.name} updated the shipment for your order.'
+                        + (f' Tracking number: {fulfillment.tracking_number}.' if fulfillment.tracking_number else ''),
+                        _order_url(request, order),
+                    )
             messages.success(request, f'Shipment status for order {order.order_number} was updated.')
             return redirect('seller_dashboard')
         elif action == 'update_stock' and seller_store:
@@ -1849,19 +2167,47 @@ def order_action(request, order_id):
                 OrderFulfillment.objects.filter(order=order).update(
                     status='Cancelled', updated_at=timezone.now(),
                 )
+                queue_order_update(
+                    order,
+                    f'order:{order.pk}:cancelled',
+                    'Cancelled',
+                    'Your cancellation was recorded. If a payment was collected, refund processing is handled separately.',
+                    _order_url(request, order),
+                )
                 messages.success(request, 'Your cancellation request was recorded. Paid orders require staff refund processing.')
         elif action == 'return':
             within_return_window = (
                 order.delivered_at is not None
                 and timezone.now() - order.delivered_at <= timedelta(days=7)
             )
-            if order.status != 'Delivered' or not within_return_window:
-                messages.error(request, 'Returns can be requested within seven days of delivery.')
+            if (
+                order.status != 'Delivered'
+                or not within_return_window
+                or ReturnRequest.objects.filter(order=order).exists()
+            ):
+                messages.error(request, 'Returns can be requested once within seven days of delivery.')
             else:
-                order.status = 'Return Requested'
-                order.return_reason = reason[:1000]
-                order.save(update_fields=['status', 'return_reason'])
-                messages.success(request, 'Your return request was sent for review.')
+                request_type = request.POST.get('request_type', 'refund')
+                if request_type not in dict(ReturnRequest.TYPE_CHOICES):
+                    messages.error(request, 'Choose refund or exchange for your return request.')
+                else:
+                    order.status = 'Return Requested'
+                    order.return_reason = reason[:1000]
+                    order.save(update_fields=['status', 'return_reason'])
+                    ReturnRequest.objects.create(
+                        order=order,
+                        customer=customer,
+                        request_type=request_type,
+                        reason=reason[:1000],
+                    )
+                    queue_order_update(
+                        order,
+                        f'order:{order.pk}:return-requested',
+                        'Return requested',
+                        f'Your {request_type} request was received and is waiting for review.',
+                        _order_url(request, order),
+                    )
+                    messages.success(request, 'Your return request was sent for review.')
         else:
             return HttpResponseBadRequest('Unknown order action.')
     return redirect('account')

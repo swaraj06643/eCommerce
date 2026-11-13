@@ -535,6 +535,36 @@ body{
 	position: relative;
 }
 
+.wishlist-card-form{
+	position: absolute;
+	right: 10px;
+	top: 10px;
+	z-index: 2;
+}
+
+.wishlist-card-form button,
+.wishlist-card-form.wishlist-login-link{
+	align-items: center;
+	background: rgba(255, 255, 255, .96);
+	border: 1px solid #eadbd5;
+	border-radius: 50%;
+	color: #b34f43;
+	display: inline-flex;
+	font-size: 22px;
+	font-weight: 700;
+	height: 40px;
+	justify-content: center;
+	line-height: 1;
+	text-decoration: none;
+	width: 40px;
+}
+
+.wishlist-card-form button:hover,
+.wishlist-card-form.wishlist-login-link:hover{
+	background: #fff0e9;
+	color: #8f3d34;
+}
+
 .product-card .thumbnail{
 	box-shadow: none;
 	display: block;
@@ -1003,6 +1033,51 @@ body{
 	padding: 6px 8px;
 }
 
+.saved-addresses-card{
+	margin-top: 24px;
+}
+
+.saved-address-list{
+	display: grid;
+	gap: 12px;
+}
+
+.saved-address-item{
+	align-items: center;
+	border: 1px solid #f0e9e5;
+	border-radius: 9px;
+	display: flex;
+	gap: 18px;
+	justify-content: space-between;
+	padding: 14px;
+}
+
+.saved-address-item p{
+	color: #5d514d;
+	margin: 4px 0;
+}
+
+.saved-address-item small{
+	color: #81736d;
+}
+
+.saved-address-actions{
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.save-address-option{
+	align-items: center;
+	display: flex;
+	gap: 8px;
+	margin: 12px 0;
+}
+
+.save-address-option input{
+	margin: 0;
+}
+
 .order-complete-page{
 	margin: 24px auto 40px;
 	max-width: 900px;
@@ -1274,6 +1349,28 @@ body{
 	font-weight: 600;
 }
 
+.wishlist-detail-form{
+	margin: 12px 0 18px;
+}
+
+.wishlist-detail-form button,
+.wishlist-detail-form.wishlist-login-link{
+	background: transparent;
+	border: 1px solid #c85e51;
+	border-radius: 7px;
+	color: #a84d3f;
+	display: inline-block;
+	font-weight: 700;
+	padding: 9px 14px;
+	text-decoration: none;
+}
+
+.wishlist-detail-form button:hover,
+.wishlist-detail-form.wishlist-login-link:hover{
+	background: #fff0e9;
+	color: #8f3d34;
+}
+
 .detail-actions{
 	display: flex;
 	gap: 10px;
@@ -1341,6 +1438,173 @@ body{
 .detail-description-panel p{
 	color: #71635e;
 	line-height: 1.65;
+}
+
+.wishlist-page{
+	margin: 24px auto 42px;
+	max-width: 1100px;
+}
+
+.wishlist-page h1{
+	color: #29211f;
+	font-size: 30px;
+	font-weight: 700;
+}
+
+.wishlist-page .collection-heading > a{
+	color: #a84d3f;
+	font-weight: 700;
+}
+
+.wishlist-product-card > a{
+	display: block;
+}
+
+.wishlist-product-card h2{
+	font-size: 18px;
+}
+
+.wishlist-stock-note{
+	color: #81736d;
+	font-size: 13px;
+	margin: 8px 0;
+}
+
+.wishlist-remove-button{
+	background: transparent;
+	border: 1px solid #c85e51;
+	border-radius: 6px;
+	color: #a84d3f;
+	font-size: 13px;
+	font-weight: 700;
+	padding: 7px 10px;
+}
+
+.wishlist-empty{
+	margin-top: 24px;
+}
+
+.product-reviews{
+	background: #fff;
+	border: 1px solid #f0e9e5;
+	border-radius: 12px;
+	margin: 0 0 40px;
+	padding: 22px;
+}
+
+.reviews-heading-row,
+.review-card-heading{
+	align-items: center;
+	display: flex;
+	gap: 16px;
+	justify-content: space-between;
+}
+
+.reviews-heading-row h2,
+.product-review-form h3,
+.review-card-heading h3{
+	color: #29211f;
+	font-size: 20px;
+	font-weight: 700;
+	margin-bottom: 10px;
+}
+
+.review-summary{
+	align-items: end;
+	display: flex;
+	flex-direction: column;
+	margin: 0;
+}
+
+.review-summary strong,
+.review-card-rating{
+	color: #a84d3f;
+	font-size: 18px;
+	font-weight: 700;
+}
+
+.review-summary > span,
+.review-card-meta,
+.review-verification-note,
+.review-purchase-note{
+	color: #81736d;
+	font-size: 14px;
+}
+
+.product-review-form{
+	background: #fffaf7;
+	border: 1px solid #f0e9e5;
+	border-radius: 10px;
+	margin: 18px 0 24px;
+	padding: 18px;
+}
+
+.product-review-form label{
+	color: #51443f;
+	display: block;
+	font-weight: 700;
+	margin: 12px 0 5px;
+}
+
+.product-review-form input,
+.product-review-form select,
+.product-review-form textarea{
+	border: 1px solid #d9cbc4;
+	border-radius: 7px;
+	box-sizing: border-box;
+	padding: 9px 11px;
+	width: 100%;
+}
+
+.product-review-form button{
+	background: #c85e51;
+	border: 0;
+	border-radius: 7px;
+	color: #fff;
+	font-weight: 700;
+	margin: 14px 0 8px;
+	padding: 10px 16px;
+}
+
+.product-review-form button:hover{
+	background: #a84d3f;
+}
+
+.review-verification-note{
+	margin: 0;
+}
+
+.review-purchase-note{
+	margin: 18px 0;
+}
+
+.review-purchase-note a{
+	color: #c85e51;
+	font-weight: 700;
+}
+
+.product-review-card{
+	border-top: 1px solid #f0e9e5;
+	padding: 18px 0 8px;
+}
+
+.product-review-card:first-child{
+	margin-top: 12px;
+}
+
+.review-card-heading h3{
+	font-size: 17px;
+	margin: 0;
+}
+
+.review-card-meta{
+	margin: 7px 0;
+}
+
+.review-card-body{
+	color: #51443f;
+	line-height: 1.6;
+	margin: 0;
 }
 
 .help-page{

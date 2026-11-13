@@ -1,4 +1,4 @@
-var CACHE_NAME = 'avatar-store-v4';
+var CACHE_NAME = 'avatar-store-v5';
 var APP_ASSETS = [
     '/static/manifest.webmanifest',
     '/static/css/main.css',

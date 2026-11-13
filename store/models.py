@@ -1,6 +1,11 @@
 from django.db import models
 from django.contrib.auth.models import User
-from django.core.validators import MaxValueValidator, MinValueValidator
+from django.core.validators import (
+    MaxLengthValidator,
+    MaxValueValidator,
+    MinLengthValidator,
+    MinValueValidator,
+)
 import uuid
 
 
@@ -46,6 +51,7 @@ class SellerStore(models.Model):
 
 class Product(models.Model):
     name = models.CharField(max_length=200, null=True)
+    brand = models.CharField(max_length=100, blank=True, default='', db_index=True)
     price = models.FloatField(max_length=200, null=True)
     list_price = models.FloatField(null=True, blank=True)
     gst_rate = models.DecimalField(
@@ -310,6 +316,93 @@ class Payment(models.Model):
         return f'{self.transaction_id} ({self.status})'
 
 
+class ReturnRequest(models.Model):
+    TYPE_CHOICES = [
+        ('refund', 'Refund'),
+        ('exchange', 'Exchange'),
+    ]
+    STATUS_CHOICES = [
+        ('requested', 'Requested'),
+        ('approved', 'Approved'),
+        ('rejected', 'Rejected'),
+        ('received', 'Return received'),
+        ('refund_processing', 'Refund processing'),
+        ('refunded', 'Refunded'),
+        ('exchange_processing', 'Exchange processing'),
+        ('exchanged', 'Exchange completed'),
+    ]
+
+    order = models.OneToOneField(
+        Order,
+        related_name='return_request',
+        on_delete=models.CASCADE,
+    )
+    customer = models.ForeignKey(
+        Customer,
+        related_name='return_requests',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+    request_type = models.CharField(max_length=12, choices=TYPE_CHOICES, default='refund')
+    status = models.CharField(max_length=24, choices=STATUS_CHOICES, default='requested')
+    reason = models.CharField(max_length=1000)
+    staff_notes = models.TextField(blank=True)
+    reviewed_by = models.ForeignKey(
+        User,
+        related_name='reviewed_return_requests',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+    inventory_restocked = models.BooleanField(default=False)
+    requested_at = models.DateTimeField(auto_now_add=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ('-requested_at',)
+
+    def __str__(self):
+        return f'{self.order} · {self.get_request_type_display()} · {self.status}'
+
+
+class Refund(models.Model):
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('processing', 'Processing'),
+        ('succeeded', 'Succeeded'),
+        ('failed', 'Failed'),
+        ('manual_required', 'Manual action required'),
+    ]
+
+    return_request = models.OneToOneField(
+        ReturnRequest,
+        related_name='refund',
+        on_delete=models.CASCADE,
+    )
+    payment = models.OneToOneField(
+        Payment,
+        related_name='refund_record',
+        on_delete=models.CASCADE,
+    )
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    provider_reference = models.CharField(max_length=120, blank=True)
+    idempotency_key = models.CharField(max_length=36, unique=True, default=uuid.uuid4)
+    attempts = models.PositiveIntegerField(default=0)
+    last_error = models.CharField(max_length=500, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ('-created_at',)
+
+    def __str__(self):
+        return f'{self.amount} refund for {self.return_request.order} ({self.status})'
+
+
 class ProductCoupon(models.Model):
     seller_store = models.ForeignKey(
         SellerStore,
@@ -343,6 +436,73 @@ class ProductCoupon(models.Model):
         super().save(*args, **kwargs)
 
 
+class ProductReview(models.Model):
+    customer = models.ForeignKey(
+        Customer,
+        related_name='product_reviews',
+        on_delete=models.CASCADE,
+    )
+    product = models.ForeignKey(
+        Product,
+        related_name='reviews',
+        on_delete=models.CASCADE,
+    )
+    order = models.ForeignKey(
+        Order,
+        related_name='product_reviews',
+        on_delete=models.CASCADE,
+    )
+    rating = models.PositiveSmallIntegerField(
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+    )
+    title = models.CharField(max_length=120)
+    body = models.TextField(validators=[MinLengthValidator(10), MaxLengthValidator(2000)])
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ('-created_at',)
+        constraints = [
+            models.UniqueConstraint(
+                fields=('customer', 'product'),
+                name='unique_customer_product_review',
+            ),
+            models.CheckConstraint(
+                check=models.Q(rating__gte=1, rating__lte=5),
+                name='product_review_rating_1_to_5',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.rating}/5 review for {self.product} by {self.customer}'
+
+
+class WishlistItem(models.Model):
+    customer = models.ForeignKey(
+        Customer,
+        related_name='wishlist_items',
+        on_delete=models.CASCADE,
+    )
+    product = models.ForeignKey(
+        Product,
+        related_name='wishlisted_by',
+        on_delete=models.CASCADE,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ('-created_at',)
+        constraints = [
+            models.UniqueConstraint(
+                fields=('customer', 'product'),
+                name='unique_customer_wishlist_product',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.customer} saved {self.product}'
+
+
 class ProductVisit(models.Model):
     product = models.ForeignKey(Product, on_delete=models.CASCADE)
     visitor_key = models.CharField(max_length=40)
@@ -372,6 +532,66 @@ class PhoneOTPRequest(models.Model):
 
     class Meta:
         ordering = ('-created_at',)
+
+
+class SavedAddress(models.Model):
+    customer = models.ForeignKey(
+        Customer,
+        related_name='saved_addresses',
+        on_delete=models.CASCADE,
+    )
+    label = models.CharField(max_length=50, default='Home')
+    recipient_name = models.CharField(max_length=120, blank=True)
+    phone = models.CharField(max_length=20)
+    address = models.CharField(max_length=200)
+    city = models.CharField(max_length=100)
+    state = models.CharField(max_length=100)
+    zipcode = models.CharField(max_length=6)
+    is_default = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ('-is_default', '-updated_at')
+        constraints = [
+            models.UniqueConstraint(
+                fields=('customer', 'address', 'city', 'state', 'zipcode'),
+                name='unique_customer_address_location',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.label}: {self.address}, {self.city}'
+
+
+class OrderEmailNotification(models.Model):
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('sending', 'Sending'),
+        ('sent', 'Sent'),
+        ('failed', 'Failed'),
+    ]
+
+    order = models.ForeignKey(
+        Order,
+        related_name='email_notifications',
+        on_delete=models.CASCADE,
+    )
+    event_key = models.CharField(max_length=160, unique=True)
+    recipient = models.EmailField()
+    subject = models.CharField(max_length=200)
+    body = models.TextField()
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default='pending')
+    attempts = models.PositiveIntegerField(default=0)
+    last_error = models.CharField(max_length=500, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ('-created_at',)
+
+    def __str__(self):
+        return f'{self.event_key} → {self.recipient} ({self.status})'
 
 
 class ShippingAddress(models.Model):

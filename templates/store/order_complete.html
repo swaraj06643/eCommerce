@@ -67,13 +67,20 @@
         <textarea name="reason_detail" class="cancel-reason-detail" placeholder="Tell us the reason" maxlength="900" hidden></textarea>
         <button type="submit" class="btn btn-outline-danger">Cancel order</button>
     </form>
+    {% elif return_request %}
+    <p class="order-public-action">{{ return_request.get_request_type_display }} request: {{ return_request.get_status_display }}{% if return_request.staff_notes %}<br>{{ return_request.staff_notes }}{% endif %}</p>
     {% elif order.status == 'Delivered' %}
     <form method="post" class="order-public-action">
         {% csrf_token %}
         <input type="hidden" name="action" value="return">
-        <label for="return-reason">Request a return (within 7 days of delivery)</label>
+        <label for="return-type">Request a return (within 7 days of delivery)</label>
+        <select id="return-type" name="request_type" required>
+            <option value="refund">Refund</option>
+            <option value="exchange">Exchange</option>
+        </select>
+        <label for="return-reason">Reason</label>
         <input id="return-reason" name="reason" type="text" maxlength="1000" required>
-        <button type="submit" class="btn btn-outline-dark">Request return</button>
+        <button type="submit" class="btn btn-outline-dark">Submit return request</button>
     </form>
     {% endif %}
 

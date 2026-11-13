@@ -92,10 +92,15 @@
                             <textarea name="reason_detail" class="cancel-reason-detail" placeholder="Tell us the reason" maxlength="900" hidden></textarea>
                             <button type="submit" class="btn btn-outline-danger btn-sm">Cancel order</button>
                         </form>
+                        {% elif order.return_request %}
+                        <p class="return-request-status">{{ order.return_request.get_request_type_display }}: {{ order.return_request.get_status_display }}</p>
                         {% elif order.status == 'Delivered' %}
                         <form method="post" action="{% url 'order_action' order.id %}">
                             {% csrf_token %}<input type="hidden" name="action" value="return">
-                            <input type="text" name="reason" placeholder="Return reason" required>
+                            <select name="request_type" required aria-label="Return type for order {{ order.order_number }}">
+                                <option value="refund">Refund</option><option value="exchange">Exchange</option>
+                            </select>
+                            <input type="text" name="reason" placeholder="Return reason" maxlength="1000" required>
                             <button type="submit" class="btn btn-outline-dark btn-sm">Request return</button>
                         </form>
                         {% endif %}
@@ -114,6 +119,41 @@
             </div>
         </div>
     </div>
+
+    <section class="account-card saved-addresses-card" id="saved-addresses">
+        <div class="card-head">
+            <h3>Saved delivery addresses</h3>
+            <span>{{ saved_addresses|length }} saved</span>
+        </div>
+        {% if saved_addresses %}
+        <div class="saved-address-list">
+            {% for address in saved_addresses %}
+            <article class="saved-address-item">
+                <div>
+                    <strong>{{ address.label }}{% if address.is_default %} · Default{% endif %}</strong>
+                    {% if address.recipient_name %}<p>{{ address.recipient_name }}</p>{% endif %}
+                    <p>{{ address.address }}, {{ address.city }}, {{ address.state }} {{ address.zipcode }}</p>
+                    <small>{{ address.phone }}</small>
+                </div>
+                <div class="saved-address-actions">
+                    {% if not address.is_default %}
+                    <form method="post" action="{% url 'saved_address_action' address.id %}">
+                        {% csrf_token %}<input type="hidden" name="action" value="set_default">
+                        <button type="submit" class="btn btn-outline-dark btn-sm">Set default</button>
+                    </form>
+                    {% endif %}
+                    <form method="post" action="{% url 'saved_address_action' address.id %}">
+                        {% csrf_token %}<input type="hidden" name="action" value="delete">
+                        <button type="submit" class="btn btn-outline-danger btn-sm">Remove</button>
+                    </form>
+                </div>
+            </article>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="email-verification-note">Save an address during checkout to use it next time.</p>
+        {% endif %}
+    </section>
 </div>
 {% endblock %}
 {% block extra_scripts %}<script src="{% static 'js/order-status.js' %}"></script>{% endblock extra_scripts %}

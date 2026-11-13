@@ -36,6 +36,18 @@
                 {% if order.shipping %}
                 <hr>
                 <h3>Shipping address</h3>
+                {% if request.user.is_authenticated and saved_addresses %}
+                <div class="form-field">
+                    <label for="saved-address-select">Use a saved address</label>
+                    <select id="saved-address-select" class="form-control" name="saved_address_id">
+                        <option value="">Enter a new address</option>
+                        {% for saved_address in saved_addresses %}
+                        <option value="{{ saved_address.id }}" data-address="{{ saved_address.address }}" data-city="{{ saved_address.city }}" data-state="{{ saved_address.state }}" data-zipcode="{{ saved_address.zipcode }}" data-phone="{{ saved_address.phone }}" {% if selected_saved_address_id == saved_address.id|stringformat:'s' %}selected{% endif %}>{{ saved_address.label }} — {{ saved_address.address }}, {{ saved_address.city }}{% if saved_address.is_default %} (default){% endif %}</option>
+                        {% endfor %}
+                    </select>
+                    <small>Selecting an address fills the delivery fields below. You can edit them for this order.</small>
+                </div>
+                {% endif %}
                 <div class="form-field">
                     <input required class="form-control" type="text" name="address" autocomplete="street-address" value="{{ checkout_address }}" placeholder="Street address">
                 </div>
@@ -56,6 +68,13 @@
                     </div>
                     <p id="checkout-postal-message" class="delivery-message" aria-live="polite">Check that your PIN code has a listed delivery area, then confirm the suggested city and state.</p>
                 </div>
+                {% if request.user.is_authenticated %}
+                <label class="save-address-option"><input id="save-address-check" type="checkbox" name="save_address"> Save this address to my account</label>
+                <div id="saved-address-label-field" class="form-field" hidden>
+                    <label for="saved-address-label">Address name</label>
+                    <input id="saved-address-label" class="form-control" type="text" name="address_label" maxlength="50" placeholder="Home, work, etc. (optional)">
+                </div>
+                {% endif %}
                 {% endif %}
 
                 <hr>

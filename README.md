@@ -3,18 +3,23 @@ Avatar is an eCommerce store created by Subhasiosh Rath in Odisha, with a welcom
 
 ## Features
 - Customer registration, login, editable profile, and order history.
-- Ordered, category-grouped storefront sections, product variants, search, price/category/option filters, and product detail pages.
+- Ordered, category-grouped storefront sections, product variants, brand-aware search, price/category/brand/option filters, and product detail pages. Popular ordering uses completed sales, wishlist saves, and unique product visits.
 - Guest and signed-in bags with quantity controls.
 - Checkout with validated contact details, Indian postal-directory PIN/locality checks, COD, manual UPI verification, and configurable PayU; email verification is not required to place an order.
 - Per-seller fulfillment tracking for placed, packed, dispatched, shipped, out-for-delivery, and delivered orders; customers see live-polled status and carrier updates.
 - Customer cancellation reasons selected from a dropdown, plus downloadable PDF invoices after payment confirmation (or immediately for COD).
+- Customer return/exchange requests within seven days of delivery; staff review, receipt/inspection, refund processing, manual reconciliation, and one-time stock restocking are managed in Django admin.
+- Idempotent email notifications for order/payment/return events, with staff-visible delivery attempts and a management command to retry pending or failed messages.
 - Optional inventory counts, low-stock admin filters, and price/cost snapshots on order lines.
 - Staff-only revenue, estimated-profit, visitor-conversion, and low-stock dashboard.
 - Dealer seller panel for store profiles, categorized product listings, inventory, product galleries, and order fulfillment. Each owner has private listing tabs and can update only shipments containing their own products. New listings and edits require at least three product photos. Active seller listings and their current prices, descriptions, offers, and categories appear in the public shop.
 - Seller vault summary based on recorded paid and pending orders; payouts are not processed by the app.
 - Dedicated seller portal with seller login and registration at `/seller-portal/`.
 - Product galleries, categories, variants, customers, seller fulfillment, orders, and payment administration.
-- Product detail pages with seller sale prices, automatically calculated percentage savings, descriptions, and offers.
+- Product detail pages with seller sale prices, automatically calculated percentage savings, descriptions, offers, and verified-purchase product ratings and reviews. Reviews are limited to customers with a delivered order and sellers cannot review their own listings.
+- Private signed-in customer wishlists with save/remove controls on product cards and detail pages.
+- Seller-managed product brands that shoppers can search and filter in the catalog.
+- Signed-in customers can save, select, set a default for, and remove delivery addresses from checkout and Account.
 - Seller-defined product coupons (up to three codes per listing), validated and applied to eligible items at checkout with discounts recorded on the order and payment.
 - Checkout price breakdown with seller-configured product GST, configurable platform fee and fee GST, free delivery, and persisted order/payment totals.
 - Installable progressive web app with a web app manifest, home-screen install prompt, cached static assets, and an offline notice.
@@ -98,7 +103,7 @@ $env:AVATAR_UPI_ID = "your-merchant-upi-id"
 python manage.py runserver
 ```
 
-Use the live PayU endpoint only after configuring and testing a merchant account. PayU can offer cards and UPI apps such as Google Pay and PhonePe, but the exact instruments are controlled by the merchant account and enabled gateway configuration. Set `INVOICE_AUTHORIZED_SIGNATORY` to the name that should appear in the invoice signatory block; the generated PDF is not a cryptographically signed document or a substitute for configuring required GSTIN/legal invoice details. Never commit merchant secrets. Manual UPI opens the installed UPI app chooser; submitted references remain pending until staff verifies them. COD is also recorded as pending until staff records payment. PayU refunds and courier updates are not automatically sent to external providers; process refunds in PayU and maintain carrier/status information in the order admin. Products with a `NULL` stock count are not inventory-tracked until a stock count is entered. A listing with stock `0` is intentionally not purchasable until its owner restocks it. Profit excludes order lines without a recorded product cost.
+Use the live PayU endpoint only after configuring and testing a merchant account. PayU can offer cards and UPI apps such as Google Pay and PhonePe, but the exact instruments are controlled by the merchant account and enabled gateway configuration. Set `INVOICE_AUTHORIZED_SIGNATORY` to the name that should appear in the invoice signatory block; the generated PDF is not a cryptographically signed document or a substitute for configuring required GSTIN/legal invoice details. Never commit merchant secrets. Manual UPI opens the installed UPI app chooser; submitted references remain pending until staff verifies them. COD is also recorded as pending until staff records payment. Courier updates are not automatically sent to external providers; maintain carrier/status information in the order admin. Return requests are reviewed in Django admin: approve or reject the request, confirm receipt and inspection before processing a refund, and restock only after confirming returned goods. PayPal refunds are submitted through the configured API; PayU refund requests are queued and remain in processing until staff reconciles completion against PayU. Manual UPI and COD refunds require staff to process and verify the refund outside the app, then record the provider reference and explicitly reconcile it in admin. Configure `PAYU_REFUND_API_URL` for the matching test or live environment; the default is PayU's test refund endpoint. Products with a `NULL` stock count are not inventory-tracked until a stock count is entered. A listing with stock `0` is intentionally not purchasable until its owner restocks it. Profit excludes order lines without a recorded product cost.
 
 PayPal Checkout is also available when configured with PayPal REST API credentials. Start with sandbox credentials and only switch to live credentials after testing a merchant account that is permitted to accept INR payments:
 
@@ -122,7 +127,7 @@ $env:EMAIL_HOST_PASSWORD = "your-gmail-app-password"
 $env:DEFAULT_FROM_EMAIL = "avatarshop@gmail.com"
 ```
 
-Guest checkout requires a valid email address for order communication, but does not require an email verification link or code. Account email verification remains available separately.
+Guest checkout requires a valid email address for order communication, but does not require an email verification link or code. Account email verification remains available separately. Order and return event emails use the same SMTP settings; failed/pending messages can be retried with `python manage.py retry_order_emails` (schedule this command with your deployment's task scheduler for ongoing retries). Delivery depends on working SMTP credentials and provider acceptance.
 
 Phone OTP sign-in uses MSG91's OTP API (see [MSG91 OTP documentation](https://docs.msg91.com/otp)). The shopper must save a unique Indian mobile number in Account → profile before phone sign-in can be used. Create and approve an OTP template in MSG91, then configure the credentials locally:
 

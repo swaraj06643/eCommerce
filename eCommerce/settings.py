@@ -34,6 +34,8 @@ if not SECRET_KEY:
         raise ImproperlyConfigured('Set DJANGO_SECRET_KEY when DEBUG is disabled.')
     SECRET_KEY = 'django-insecure-local-development-only-not-for-production'
 
+SITE_URL = os.environ.get('SITE_URL', 'http://localhost:8000').rstrip('/')
+
 ALLOWED_HOSTS = [
     host.strip()
     for host in os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
@@ -150,6 +152,10 @@ LOGOUT_REDIRECT_URL = '/'
 PAYU_KEY = os.environ.get('PAYU_KEY', '')
 PAYU_SALT = os.environ.get('PAYU_SALT', '')
 PAYU_PAYMENT_URL = os.environ.get('PAYU_PAYMENT_URL', 'https://test.payu.in/_payment')
+PAYU_REFUND_API_URL = os.environ.get(
+    'PAYU_REFUND_API_URL',
+    'https://test.payu.in/merchant/postservice.php?form=2',
+)
 PAYPAL_CLIENT_ID = os.environ.get('PAYPAL_CLIENT_ID', '')
 PAYPAL_CLIENT_SECRET = os.environ.get('PAYPAL_CLIENT_SECRET', '')
 PAYPAL_API_BASE = os.environ.get(

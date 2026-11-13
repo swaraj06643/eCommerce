@@ -107,6 +107,9 @@
               </li>
               {% if request.user.is_authenticated %}
               <li class="nav-item">
+                  <a class="nav-link" href="{% url 'wishlist' %}">Wishlist</a>
+              </li>
+              <li class="nav-item">
                   <a class="nav-link" href="{% url 'account_settings' %}">Settings</a>
               </li>
               {% endif %}

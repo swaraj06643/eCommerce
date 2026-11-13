@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 from datetime import timedelta
+from decimal import Decimal
 from io import BytesIO
 import tempfile
 from urllib.parse import parse_qs, quote, urlsplit
@@ -25,18 +26,27 @@ from .models import (
     Customer,
     EmailVerification,
     Order,
+    OrderEmailNotification,
     OrderFulfillment,
     OrderItem,
     Payment,
     Product,
     ProductCoupon,
     ProductImage,
+    ProductReview,
     ProductVariant,
+    ProductVisit,
+    Refund,
+    ReturnRequest,
+    SavedAddress,
     SellerStore,
     ShippingAddress,
+    WishlistItem,
 )
 from .postal import PostalLookupError, validate_delivery_location
 from .sms import send_phone_otp, verify_phone_otp
+from .notifications import dispatch_order_email, queue_order_update
+from .refunds import RefundProviderError, process_return_refund, restock_return_items
 from .views import PayPalGatewayError
 from eCommerce.settings import database_config
 
@@ -136,6 +146,251 @@ class StorefrontTests(TestCase):
         self.assertContains(response, '10% off')
         self.assertContains(response, 'delivery-check')
         self.assertContains(response, reverse('checkout'))
+
+    def test_delivered_customer_can_submit_and_update_verified_product_review(self):
+        user = User.objects.create_user(
+            username='review-buyer',
+            password='Password!123',
+            first_name='Asha',
+        )
+        customer = Customer.objects.create(
+            user=user,
+            name='Asha Buyer',
+            email='asha@example.com',
+        )
+        order = Order.objects.create(
+            customer=customer,
+            status='Delivered',
+            delivered_at=timezone.now(),
+        )
+        OrderItem.objects.create(
+            order=order,
+            product=self.product,
+            quantity=1,
+            unit_price=self.product.price,
+        )
+        self.client.force_login(user)
+
+        response = self.client.post(
+            reverse('product_detail', args=[self.product.id]),
+            {'rating': '5', 'title': 'Great sound', 'body': 'Comfortable and clear for daily listening.'},
+        )
+
+        self.assertRedirects(
+            response,
+            f'{reverse("product_detail", args=[self.product.id])}#reviews',
+            fetch_redirect_response=False,
+        )
+        review = ProductReview.objects.get(product=self.product, customer=customer)
+        self.assertEqual(review.order, order)
+        self.assertEqual(review.rating, 5)
+
+        response = self.client.get(reverse('product_detail', args=[self.product.id]))
+        self.assertContains(response, '5.0')
+        self.assertContains(response, 'Verified purchase')
+        self.assertContains(response, 'Asha')
+
+        self.client.post(
+            reverse('product_detail', args=[self.product.id]),
+            {'rating': '4', 'title': 'Still great', 'body': 'Comfortable and clear after using it every day.'},
+        )
+        self.assertEqual(ProductReview.objects.filter(product=self.product, customer=customer).count(), 1)
+        review.refresh_from_db()
+        self.assertEqual(review.rating, 4)
+        self.assertEqual(review.title, 'Still great')
+
+    def test_review_requires_a_delivered_order_for_the_product(self):
+        user = User.objects.create_user(username='not-delivered', password='Password!123')
+        customer = Customer.objects.create(user=user, name='Buyer', email='buyer@example.com')
+        order = Order.objects.create(customer=customer, status='Placed')
+        OrderItem.objects.create(
+            order=order,
+            product=self.product,
+            quantity=1,
+            unit_price=self.product.price,
+        )
+        self.client.force_login(user)
+
+        response = self.client.post(
+            reverse('product_detail', args=[self.product.id]),
+            {'rating': '5', 'title': 'Nice item', 'body': 'This should not be accepted before delivery.'},
+        )
+
+        self.assertRedirects(
+            response,
+            f'{reverse("product_detail", args=[self.product.id])}#reviews',
+            fetch_redirect_response=False,
+        )
+        self.assertFalse(ProductReview.objects.exists())
+
+    def test_seller_cannot_review_own_listing(self):
+        seller = User.objects.create_user(username='review-seller', password='Password!123')
+        seller_store = SellerStore.objects.create(
+            owner=seller,
+            name='Seller Store',
+            description='A seller store for review permissions.',
+        )
+        self.product.seller_store = seller_store
+        self.product.save(update_fields=['seller_store'])
+        customer = Customer.objects.create(user=seller, name='Seller', email='seller@example.com')
+        order = Order.objects.create(
+            customer=customer,
+            status='Delivered',
+            delivered_at=timezone.now(),
+        )
+        OrderItem.objects.create(order=order, product=self.product, quantity=1, unit_price=self.product.price)
+        self.client.force_login(seller)
+
+        response = self.client.get(reverse('product_detail', args=[self.product.id]))
+
+        self.assertFalse(response.context['can_review'])
+        self.assertContains(response, 'Seller accounts cannot review their own listings')
+
+    def test_popular_sort_uses_sales_saves_and_product_visits(self):
+        popular_product = Product.objects.create(
+            name='Zebra Popular Item',
+            price=100,
+            description='A product that ranks highly from actual shopper activity.',
+        )
+        order_customer = Customer.objects.create(name='Recent Buyer', email='recent@example.com')
+        order = Order.objects.create(
+            customer=order_customer,
+            status='Delivered',
+            complete=True,
+            delivered_at=timezone.now(),
+        )
+        OrderItem.objects.create(order=order, product=popular_product, quantity=3, unit_price=100)
+        ProductVisit.objects.create(product=popular_product, visitor_key='popular-visitor')
+
+        response = self.client.get(reverse('store'))
+
+        listed_products = list(response.context['products'])
+        self.assertEqual(listed_products[0], popular_product)
+        self.assertEqual(listed_products[0].sold_units, 3)
+        self.assertEqual(listed_products[0].product_visits, 1)
+
+    @patch('store.notifications.send_mail', return_value=1)
+    def test_order_emails_are_deduplicated_and_dispatch_after_commit(self, send_mail_mock):
+        customer = Customer.objects.create(name='Email Buyer', email='email-buyer@example.com')
+        order = Order.objects.create(customer=customer, complete=True, order_number='AV-EMAIL-1')
+
+        with self.captureOnCommitCallbacks(execute=True):
+            notification = queue_order_update(
+                order,
+                'order:email-test:placed',
+                'Placed',
+                'Your order was received.',
+                'https://shop.example/order/',
+            )
+
+        notification.refresh_from_db()
+        self.assertEqual(notification.status, 'sent')
+        self.assertEqual(notification.attempts, 1)
+        send_mail_mock.assert_called_once()
+
+        with self.captureOnCommitCallbacks(execute=True):
+            queue_order_update(
+                order,
+                'order:email-test:placed',
+                'Placed',
+                'Duplicate should not send.',
+                'https://shop.example/order/',
+            )
+        send_mail_mock.assert_called_once()
+
+    @patch('store.notifications.send_mail', side_effect=OSError('SMTP unavailable'))
+    def test_failed_order_email_can_be_retried(self, send_mail_mock):
+        customer = Customer.objects.create(name='Email Buyer', email='retry@example.com')
+        order = Order.objects.create(customer=customer, complete=True, order_number='AV-EMAIL-2')
+
+        with self.captureOnCommitCallbacks(execute=True):
+            notification = queue_order_update(
+                order,
+                'order:email-test:retry',
+                'Placed',
+                'Your order was received.',
+                'https://shop.example/order/',
+            )
+        notification.refresh_from_db()
+        self.assertEqual(notification.status, 'failed')
+        self.assertEqual(notification.attempts, 1)
+        self.assertIn('SMTP unavailable', notification.last_error)
+
+        with patch('store.notifications.send_mail', return_value=1):
+            self.assertTrue(dispatch_order_email(notification.pk))
+        notification.refresh_from_db()
+        self.assertEqual(notification.status, 'sent')
+        self.assertEqual(notification.attempts, 2)
+
+    def test_brand_can_be_searched_and_filtered(self):
+        branded_product = Product.objects.create(
+            name='Everyday Trainer',
+            brand='North Star',
+            price=120,
+            description='A comfortable trainer made for everyday movement.',
+        )
+
+        search_response = self.client.get(reverse('store'), {'q': 'North Star'})
+        self.assertContains(search_response, branded_product.name)
+
+        filter_response = self.client.get(reverse('store'), {
+            'q': 'Everyday',
+            'brand': 'north star',
+        })
+        self.assertEqual(filter_response.status_code, 200)
+        self.assertEqual(list(filter_response.context['products']), [branded_product])
+        self.assertEqual(filter_response.context['selected_brand'], 'North Star')
+        self.assertContains(filter_response, 'Everyday Trainer')
+        brand_response = self.client.get(reverse('store'), {'brand': 'North Star'})
+        self.assertContains(brand_response, 'SHOP BY BRAND')
+        self.assertContains(brand_response, 'North Star')
+
+    def test_wishlist_is_account_private_and_can_be_toggled(self):
+        user = User.objects.create_user(username='wishlist-owner', password='Password!123')
+        self.client.force_login(user)
+
+        response = self.client.post(
+            reverse('wishlist_toggle'),
+            {'product_id': str(self.product.id), 'next': reverse('product_detail', args=[self.product.id])},
+        )
+
+        self.assertRedirects(
+            response,
+            reverse('product_detail', args=[self.product.id]),
+            fetch_redirect_response=False,
+        )
+        customer = Customer.objects.get(user=user)
+        self.assertTrue(WishlistItem.objects.filter(customer=customer, product=self.product).exists())
+        response = self.client.get(reverse('wishlist'))
+        self.assertContains(response, self.product.name)
+
+        other_user = User.objects.create_user(username='other-wishlist-user', password='Password!123')
+        other_client = Client()
+        other_client.force_login(other_user)
+        self.assertNotContains(other_client.get(reverse('wishlist')), self.product.name)
+
+        response = self.client.post(
+            reverse('wishlist_toggle'),
+            {'product_id': str(self.product.id), 'next': reverse('wishlist')},
+        )
+        self.assertRedirects(response, reverse('wishlist'), fetch_redirect_response=False)
+        self.assertFalse(WishlistItem.objects.filter(customer=customer, product=self.product).exists())
+
+    def test_wishlist_toggle_rejects_external_redirect_and_invalid_product_id(self):
+        user = User.objects.create_user(username='safe-wishlist-user', password='Password!123')
+        self.client.force_login(user)
+
+        response = self.client.post(
+            reverse('wishlist_toggle'),
+            {'product_id': str(self.product.id), 'next': 'https://attacker.example/'},
+        )
+        self.assertRedirects(response, reverse('wishlist'), fetch_redirect_response=False)
+
+        response = self.client.post(
+            reverse('wishlist_toggle'),
+            {'product_id': 'not-an-id', 'next': reverse('wishlist')},
+        )
+        self.assertEqual(response.status_code, 404)
 
     def test_homepage_groups_products_by_ordered_category(self):
         fashion = Category.objects.create(name='Fashion First', slug='fashion-first', sort_order=1)
@@ -253,7 +508,7 @@ class StorefrontTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response['Service-Worker-Allowed'], '/')
-        self.assertContains(response, 'avatar-store-v4')
+        self.assertContains(response, 'avatar-store-v5')
         self.assertContains(response, 'order-status.js')
         self.assertContains(response, "request.mode === 'navigate'")
 
@@ -480,6 +735,134 @@ class StorefrontTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertTrue(Order.objects.filter(customer=user.customer, complete=True).exists())
+
+    def test_signed_in_checkout_uses_only_the_customers_saved_address(self):
+        user = User.objects.create_user(
+            username='address-book-buyer',
+            email='address-book@example.com',
+            password='Password!123',
+        )
+        customer = Customer.objects.create(
+            user=user,
+            name='Address Book Buyer',
+            email='address-book@example.com',
+            phone='9876543210',
+        )
+        saved_address = SavedAddress.objects.create(
+            customer=customer,
+            label='Home',
+            recipient_name='Address Book Buyer',
+            phone='9876543210',
+            address='12 Market Road',
+            city='Bhubaneswar',
+            state='Odisha',
+            zipcode='751001',
+            is_default=True,
+        )
+        open_order = Order.objects.create(customer=customer, complete=False)
+        OrderItem.objects.create(
+            order=open_order,
+            product=self.product,
+            quantity=1,
+            unit_price=self.product.price,
+        )
+        self.client.force_login(user)
+
+        checkout_page = self.client.get(reverse('checkout'))
+        self.assertContains(checkout_page, 'Use a saved address')
+        self.assertContains(checkout_page, 'Home — 12 Market Road, Bhubaneswar (default)')
+
+        response = self.client.post(reverse('checkout'), {
+            'payment_method': 'cod',
+            'saved_address_id': saved_address.pk,
+            'phone': '',
+            'address': '999 Attacker Road',
+            'city': 'Cuttack',
+            'state': 'Bihar',
+            'zipcode': '111111',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        placed_order = Order.objects.get(customer=customer, complete=True)
+        shipping_address = ShippingAddress.objects.get(order=placed_order)
+        self.assertEqual(shipping_address.address, saved_address.address)
+        self.assertEqual(shipping_address.city, saved_address.city)
+        self.assertEqual(shipping_address.state, saved_address.state)
+        self.assertEqual(shipping_address.zipcode, saved_address.zipcode)
+
+    def test_checkout_can_save_and_manage_an_account_address(self):
+        user = User.objects.create_user(
+            username='save-address-buyer',
+            email='save-address@example.com',
+            password='Password!123',
+        )
+        customer = Customer.objects.create(
+            user=user,
+            name='Save Address Buyer',
+            email='save-address@example.com',
+        )
+        open_order = Order.objects.create(customer=customer, complete=False)
+        OrderItem.objects.create(
+            order=open_order,
+            product=self.product,
+            quantity=1,
+            unit_price=self.product.price,
+        )
+        self.client.force_login(user)
+
+        response = self.client.post(reverse('checkout'), {
+            'payment_method': 'cod',
+            'phone': '9876543210',
+            'address': '12 Market Road',
+            'city': 'Bhubaneswar',
+            'state': 'Odisha',
+            'zipcode': '751001',
+            'save_address': 'on',
+            'address_label': 'Office',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        saved_address = SavedAddress.objects.get(customer=customer)
+        self.assertEqual(saved_address.label, 'Office')
+        self.assertTrue(saved_address.is_default)
+        self.assertContains(self.client.get(reverse('account')), 'Office')
+
+        response = self.client.post(reverse('saved_address_action', args=[saved_address.pk]), {
+            'action': 'delete',
+        })
+        self.assertRedirects(response, reverse('account'))
+        self.assertFalse(SavedAddress.objects.filter(pk=saved_address.pk).exists())
+
+    def test_checkout_rejects_another_customers_saved_address(self):
+        buyer = User.objects.create_user(
+            username='address-owner-check',
+            email='owner-check@example.com',
+            password='Password!123',
+        )
+        customer = Customer.objects.create(user=buyer, email='owner-check@example.com')
+        other_user = User.objects.create_user(username='other-address-owner', password='Password!123')
+        other_customer = Customer.objects.create(user=other_user, email='other@example.com')
+        foreign_address = SavedAddress.objects.create(
+            customer=other_customer,
+            label='Private',
+            phone='9876543210',
+            address='12 Market Road',
+            city='Bhubaneswar',
+            state='Odisha',
+            zipcode='751001',
+        )
+        open_order = Order.objects.create(customer=customer, complete=False)
+        OrderItem.objects.create(order=open_order, product=self.product, quantity=1)
+        self.client.force_login(buyer)
+
+        response = self.client.post(reverse('checkout'), {
+            'payment_method': 'cod',
+            'saved_address_id': foreign_address.pk,
+        })
+
+        self.assertEqual(response.status_code, 400)
+        self.assertContains(response, 'That saved address is not available on your account.', status_code=400)
+        self.assertFalse(Order.objects.filter(customer=customer, complete=True).exists())
 
     def test_checkout_does_not_require_email_verification(self):
         EmailVerification.objects.filter(email='buyer@example.com').delete()
@@ -1739,3 +2122,251 @@ class StorefrontTests(TestCase):
             self.client.get(reverse('product_detail', args=[product.pk])).status_code,
             404,
         )
+
+
+class ReturnRefundTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='return-owner', email='return-owner@example.com', password='Password!123',
+        )
+        self.customer = Customer.objects.create(
+            user=self.user, name='Return Owner', email='return-owner@example.com',
+        )
+        self.product = Product.objects.create(name='Return Test Item', price=179, stock=0)
+
+    def make_return(self, method='paypal', payment_status='paid'):
+        order = Order.objects.create(
+            customer=self.customer,
+            complete=True,
+            status='Return Requested',
+            payment_method=method,
+            payment_status=payment_status,
+        )
+        OrderItem.objects.create(
+            order=order,
+            product=self.product,
+            quantity=2,
+            unit_price=Decimal('179.00'),
+            stock_source='product',
+        )
+        payment = Payment.objects.create(
+            order=order,
+            method=method,
+            amount=179.0,
+            status=payment_status,
+            transaction_id=f'refund-{method}-{order.pk}',
+            gateway_payment_id='PAYU-GATEWAY-1' if method == 'payu' else 'PAYPAL-ORDER-1',
+            customer_reference='PAYPAL-CAPTURE-1' if method == 'paypal' else '',
+        )
+        return_request = ReturnRequest.objects.create(
+            order=order,
+            customer=self.customer,
+            request_type='refund',
+            status='refund_processing',
+            reason='Item arrived damaged',
+        )
+        refund = Refund.objects.create(
+            return_request=return_request,
+            payment=payment,
+            amount=Decimal('179.00'),
+        )
+        return order, payment, return_request, refund
+
+    def test_return_action_is_owner_scoped_and_requires_delivery_window(self):
+        recent_order = Order.objects.create(
+            customer=self.customer,
+            complete=True,
+            status='Delivered',
+            delivered_at=timezone.now(),
+        )
+        other_user = User.objects.create_user(username='not-return-owner', password='Password!123')
+        self.client.force_login(other_user)
+        response = self.client.post(reverse('order_action', args=[recent_order.pk]), {
+            'action': 'return', 'request_type': 'refund', 'reason': 'Damaged',
+        })
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(ReturnRequest.objects.filter(order=recent_order).exists())
+
+        old_order = Order.objects.create(
+            customer=self.customer,
+            complete=True,
+            status='Delivered',
+            delivered_at=timezone.now() - timedelta(days=8),
+        )
+        self.client.force_login(self.user)
+        response = self.client.post(reverse('order_action', args=[old_order.pk]), {
+            'action': 'return', 'request_type': 'refund', 'reason': 'Damaged',
+        })
+        self.assertEqual(response.status_code, 302)
+        old_order.refresh_from_db()
+        self.assertEqual(old_order.status, 'Delivered')
+        self.assertFalse(ReturnRequest.objects.filter(order=old_order).exists())
+
+        response = self.client.post(reverse('order_action', args=[recent_order.pk]), {
+            'action': 'return', 'request_type': 'refund', 'reason': 'Damaged',
+        })
+        self.assertEqual(response.status_code, 302)
+        recent_order.refresh_from_db()
+        self.assertEqual(recent_order.status, 'Return Requested')
+        self.assertEqual(ReturnRequest.objects.get(order=recent_order).customer, self.customer)
+
+    def test_return_stock_is_restocked_only_once(self):
+        _, _, return_request, _ = self.make_return(method='cod', payment_status='pending')
+
+        self.assertTrue(restock_return_items(return_request.pk))
+        self.assertFalse(restock_return_items(return_request.pk))
+        self.product.refresh_from_db()
+        return_request.refresh_from_db()
+        self.assertEqual(self.product.stock, 2)
+        self.assertTrue(return_request.inventory_restocked)
+
+    def test_admin_approves_and_receives_returns_before_creating_refund(self):
+        order = Order.objects.create(
+            customer=self.customer,
+            complete=True,
+            status='Delivered',
+            delivered_at=timezone.now(),
+            payment_method='paypal',
+            payment_status='paid',
+        )
+        OrderItem.objects.create(
+            order=order, product=self.product, quantity=1, unit_price=179,
+            stock_source='product',
+        )
+        payment = Payment.objects.create(
+            order=order,
+            method='paypal',
+            amount=179,
+            status='paid',
+            transaction_id='admin-return-payment',
+            customer_reference='PAYPAL-CAPTURE-ADMIN',
+        )
+        return_request = ReturnRequest.objects.create(
+            order=order,
+            customer=self.customer,
+            request_type='refund',
+            status='requested',
+            reason='Item arrived damaged',
+        )
+        staff = User.objects.create_user(
+            username='return-admin', password='Password!123', is_staff=True, is_superuser=True,
+        )
+        self.client.force_login(staff)
+        admin_url = reverse('admin:store_returnrequest_changelist')
+
+        response = self.client.post(admin_url, {
+            'action': 'approve_requests',
+            '_selected_action': [return_request.pk],
+        })
+        self.assertEqual(response.status_code, 302)
+        return_request.refresh_from_db()
+        self.assertEqual(return_request.status, 'approved')
+        self.assertEqual(return_request.reviewed_by, staff)
+
+        response = self.client.post(admin_url, {
+            'action': 'mark_returns_received',
+            '_selected_action': [return_request.pk],
+        })
+        self.assertEqual(response.status_code, 302)
+        return_request.refresh_from_db()
+        self.product.refresh_from_db()
+        refund = Refund.objects.get(return_request=return_request)
+        self.assertEqual(return_request.status, 'refund_processing')
+        self.assertTrue(return_request.inventory_restocked)
+        self.assertEqual(self.product.stock, 1)
+        self.assertEqual(refund.payment, payment)
+        self.assertEqual(refund.status, 'pending')
+
+    @override_settings(
+        PAYPAL_CLIENT_ID='paypal-client',
+        PAYPAL_CLIENT_SECRET='paypal-secret',
+        PAYPAL_API_BASE='https://api-m.sandbox.paypal.com',
+    )
+    def test_paypal_completed_refund_updates_payment_and_return(self):
+        order, payment, return_request, refund = self.make_return()
+
+        with patch('store.refunds._paypal_request', return_value={
+            'id': 'PAYPAL-REFUND-1', 'status': 'COMPLETED',
+        }) as provider:
+            result = process_return_refund(refund.pk)
+
+        provider.assert_called_once()
+        self.assertEqual(provider.call_args.args[1], '/v2/payments/captures/PAYPAL-CAPTURE-1/refund')
+        self.assertEqual(provider.call_args.kwargs['request_id'], str(refund.idempotency_key))
+        payment.refresh_from_db()
+        order.refresh_from_db()
+        return_request.refresh_from_db()
+        self.assertEqual(result.status, 'succeeded')
+        self.assertEqual(result.provider_reference, 'PAYPAL-REFUND-1')
+        self.assertEqual(payment.status, 'refunded')
+        self.assertEqual(order.status, 'Returned')
+        self.assertEqual(return_request.status, 'refunded')
+
+    @override_settings(
+        PAYPAL_CLIENT_ID='paypal-client',
+        PAYPAL_CLIENT_SECRET='paypal-secret',
+    )
+    def test_paypal_pending_refund_stays_processing_for_reconciliation(self):
+        _, _, return_request, refund = self.make_return()
+        with patch('store.refunds._paypal_request', return_value={
+            'id': 'PAYPAL-REFUND-PENDING', 'status': 'PENDING',
+        }):
+            result = process_return_refund(refund.pk)
+
+        self.assertEqual(result.status, 'processing')
+        self.assertEqual(result.provider_reference, 'PAYPAL-REFUND-PENDING')
+        return_request.refresh_from_db()
+        self.assertEqual(return_request.status, 'refund_processing')
+
+    @override_settings(
+        PAYPAL_CLIENT_ID='paypal-client',
+        PAYPAL_CLIENT_SECRET='paypal-secret',
+    )
+    def test_paypal_refund_provider_failure_is_retryable(self):
+        _, _, _, refund = self.make_return()
+        with patch(
+            'store.refunds._paypal_request',
+            side_effect=RefundProviderError('Provider temporarily unavailable.'),
+        ):
+            result = process_return_refund(refund.pk)
+
+        self.assertEqual(result.status, 'failed')
+        self.assertIn('temporarily unavailable', result.last_error)
+        self.assertEqual(result.attempts, 1)
+
+        with patch('store.refunds._paypal_request', return_value={
+            'id': 'PAYPAL-REFUND-FAILED', 'status': 'FAILED',
+        }):
+            result = process_return_refund(refund.pk)
+        self.assertEqual(result.status, 'failed')
+        self.assertIn('did not confirm', result.last_error)
+        self.assertEqual(result.attempts, 2)
+
+    @override_settings(
+        PAYU_KEY='merchant-key',
+        PAYU_SALT='merchant-salt',
+        PAYU_REFUND_API_URL='https://test.payu.in/merchant/postservice.php?form=2',
+    )
+    def test_payu_accepted_refund_remains_processing_until_reconciled(self):
+        _, _, return_request, refund = self.make_return(method='payu')
+        response = mock_patch('store.refunds.urlopen')
+        urlopen = response.start()
+        self.addCleanup(response.stop)
+        urlopen.return_value.__enter__.return_value.read.return_value = b'{"status":1,"request_id":"PAYU-REFUND-1"}'
+
+        result = process_return_refund(refund.pk)
+
+        self.assertEqual(result.status, 'processing')
+        self.assertEqual(result.provider_reference, 'PAYU-REFUND-1')
+        self.assertIn('queued', result.last_error.lower())
+        return_request.refresh_from_db()
+        self.assertEqual(return_request.status, 'refund_processing')
+        self.assertEqual(urlopen.call_args.args[0].full_url, 'https://test.payu.in/merchant/postservice.php?form=2')
+
+    def test_manual_payment_refund_requires_staff_reconciliation(self):
+        _, _, _, refund = self.make_return(method='upi_manual')
+
+        result = process_return_refund(refund.pk)
+
+        self.assertEqual(result.status, 'manual_required')
+        self.assertIn('manual refund', result.last_error)

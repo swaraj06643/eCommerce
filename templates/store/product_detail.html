@@ -31,7 +31,7 @@
     <div class="detail-information">
         <p class="section-kicker">AVATAR EVERYDAY EDIT</p>
         <h1>{{ product.name }}</h1>
-        {% if product.category %}<p class="detail-product-category">{{ product.category.name }}</p>{% endif %}
+        {% if product.category or product.brand %}<p class="detail-product-category">{% if product.category %}{{ product.category.name }}{% endif %}{% if product.category and product.brand %} · {% endif %}{{ product.brand }}</p>{% endif %}
         {% if product.seller_store %}<p class="seller-product-byline">Sold by {{ product.seller_store.name }}</p>{% endif %}
         <p class="detail-description">{{ product.description|default:"Product details will be updated soon. Contact us if you need more information." }}</p>
 
@@ -97,6 +97,14 @@
             <button type="button" data-product="{{ product.id }}" data-stock="{{ product.stock|default_if_none:'' }}" data-action="add" class="detail-add update-cart" {% if product.is_out_of_stock or variants %}disabled{% endif %}>{% if product.is_out_of_stock %}Out of stock{% else %}Add to bag{% endif %}</button>
             <button type="button" data-product="{{ product.id }}" data-stock="{{ product.stock|default_if_none:'' }}" data-action="add" data-after-add="{% url 'checkout' %}" class="detail-buy update-cart" {% if product.is_out_of_stock or variants %}disabled{% endif %}>{% if product.is_out_of_stock %}Out of stock{% else %}Buy now{% endif %}</button>
         </div>
+        {% if request.user.is_authenticated %}
+        <form class="wishlist-detail-form" method="post" action="{% url 'wishlist_toggle' %}">
+            {% csrf_token %}<input type="hidden" name="product_id" value="{{ product.id }}"><input type="hidden" name="next" value="{{ request.get_full_path }}">
+            <button type="submit" aria-pressed="{{ is_wishlisted|yesno:'true,false' }}">{% if is_wishlisted %}♥ Remove from wishlist{% else %}♡ Save to wishlist{% endif %}</button>
+        </form>
+        {% else %}
+        <a class="wishlist-detail-form wishlist-login-link" href="{% url 'login' %}?next={{ request.get_full_path|urlencode }}">♡ Sign in to save this product</a>
+        {% endif %}
 
         <div class="detail-service-notes">
             <p><strong>Delivery address</strong><span>Add your full address and PIN code at checkout.</span></p>
@@ -109,6 +117,62 @@
     <h2>Product details</h2>
     <p>{{ product.description|default:"Product details will be updated soon. Contact us if you need more information." }}</p>
     <a href="{% url 'help' %}">Questions about this product? Visit Help &amp; support</a>
+</section>
+
+<section class="product-reviews" id="reviews" aria-labelledby="reviews-heading">
+    <div class="reviews-heading-row">
+        <div>
+            <p class="section-kicker">SHOPPER FEEDBACK</p>
+            <h2 id="reviews-heading">Ratings &amp; reviews</h2>
+        </div>
+        <p class="review-summary">
+            {% if review_count %}
+            <strong aria-label="Average rating {{ average_rating|floatformat:1 }} out of 5">{{ average_rating|floatformat:1 }} <span aria-hidden="true">★</span></strong>
+            <span>{{ review_count }} review{{ review_count|pluralize }}</span>
+            {% else %}
+            <span>No ratings yet</span>
+            {% endif %}
+        </p>
+    </div>
+
+    {% if can_review %}
+    <form class="product-review-form" method="post" action="{% url 'product_detail' product.id %}#reviews">
+        {% csrf_token %}
+        <h3>{% if existing_review %}Update your review{% else %}Review this product{% endif %}</h3>
+        {{ review_form.non_field_errors }}
+        <label for="{{ review_form.rating.id_for_label }}">{{ review_form.rating.label }}</label>
+        {{ review_form.rating }}{{ review_form.rating.errors }}
+        <label for="{{ review_form.title.id_for_label }}">{{ review_form.title.label }}</label>
+        {{ review_form.title }}{{ review_form.title.errors }}
+        <label for="{{ review_form.body.id_for_label }}">{{ review_form.body.label }}</label>
+        {{ review_form.body }}{{ review_form.body.errors }}
+        <button type="submit">{% if existing_review %}Save changes{% else %}Submit review{% endif %}</button>
+        <p class="review-verification-note">Reviews are available only after a delivered order of this product.</p>
+    </form>
+    {% elif is_seller_owner %}
+    <p class="review-purchase-note">Seller accounts cannot review their own listings.</p>
+    {% elif request.user.is_authenticated %}
+    <p class="review-purchase-note">Once an order containing this product is delivered, you can share a verified-purchase review here.</p>
+    {% else %}
+    <p class="review-purchase-note"><a href="{% url 'login' %}?next={{ request.path|urlencode }}">Sign in</a> with the account that received a delivered order to review this product.</p>
+    {% endif %}
+
+    {% if reviews %}
+    <div class="product-review-list">
+        {% for review in reviews %}
+        <article class="product-review-card">
+            <div class="review-card-heading">
+                <h3>{{ review.title }}</h3>
+                <span class="review-card-rating" aria-label="{{ review.rating }} out of 5 stars">{{ review.rating }} <span aria-hidden="true">★</span></span>
+            </div>
+            <p class="review-card-meta">{{ review.customer.user.first_name|default:"Verified customer" }} · Verified purchase · {{ review.created_at|date:"M j, Y" }}</p>
+            <p class="review-card-body">{{ review.body|linebreaksbr }}</p>
+        </article>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="review-purchase-note">Be the first to review this product after your order is delivered.</p>
+    {% endif %}
 </section>
 {% endblock content %}
 
