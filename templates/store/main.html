@@ -1,24 +1,47 @@
 <!DOCTYPE html>
 {% load static %}
-<html>
+<html lang="en">
     <head>
-           <title>{% block title %}Avatar Store | Find your next favourite thing{% endblock title %}</title>
-
-            <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1" />
+           <title>{% block title %}Avatar Store | Online shopping for fashion, beauty, home and more{% endblock title %}</title>
+            <meta name="description" content="{% block meta_description %}Shop fashion, beauty, electronics, home, books and everyday finds at Avatar Store. Explore seller listings, current offers and verified product reviews.{% endblock meta_description %}">
+            <link rel="canonical" href="{{ request.scheme }}://{{ request.get_host }}{{ request.path }}">
+            <meta property="og:site_name" content="Avatar Store">
+            <meta property="og:type" content="{% block og_type %}website{% endblock og_type %}">
+            <meta property="og:title" content="{% block social_title %}Avatar Store | Online shopping for everyday finds{% endblock social_title %}">
+            <meta property="og:description" content="{% block social_description %}Explore seller listings, current offers and verified product reviews at Avatar Store.{% endblock social_description %}">
+            <meta property="og:url" content="{{ request.scheme }}://{{ request.get_host }}{{ request.path }}">
+            <meta property="og:image" content="{% block social_image %}{{ request.scheme }}://{{ request.get_host }}{% static 'images/icon-512.png' %}{% endblock social_image %}">
+            <meta name="twitter:card" content="summary_large_image">
+            <meta name="twitter:title" content="{% block twitter_title %}Avatar Store | Shop online{% endblock twitter_title %}">
+            <meta name="twitter:description" content="{% block twitter_description %}Discover everyday shopping at Avatar Store.{% endblock twitter_description %}">
+            <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1">
             <meta name="theme-color" content="#e85f54">
             <meta name="apple-mobile-web-app-capable" content="yes">
             <meta name="apple-mobile-web-app-status-bar-style" content="default">
             <link rel="manifest" href="{% static 'manifest.webmanifest' %}">
             <link rel="apple-touch-icon" href="{% static 'images/icon-192.png' %}">
             <link rel="icon" type="image/svg+xml" href="{% static 'images/avatar-mark.svg' %}">
-            <link rel="stylesheet" type="text/css" href="{% static 'css/main.css' %}">
+            <link rel="stylesheet" type="text/css" href="{% static 'css/main.css' %}?v=7">
             <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css" integrity="sha384-Gn5384xqQ1aoWXA+058RXPxPg6fy4IWvTNh0E263XmFcJlSAwiGgFAW/dAiS6JXm" crossorigin="anonymous">
           
             <link rel="preconnect" href="https://fonts.googleapis.com">
             <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
             <link href="https://fonts.googleapis.com/css2?family=Glory:wght@500&display=swap" rel="stylesheet">
-
-            <script>document.documentElement.classList.add('js');</script>
+            <script>
+                (function () {
+                    var theme = 'light';
+                    try {
+                        theme = localStorage.getItem('avatar-theme') ||
+                            (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+                    } catch (error) {}
+                    document.documentElement.dataset.theme = theme;
+                }());
+                document.documentElement.classList.add('js');
+            </script>
+            <script type="application/ld+json">
+                {"@context":"https://schema.org","@type":"WebSite","name":"Avatar Store","url":"{{ request.scheme }}://{{ request.get_host }}/"}
+            </script>
+            {% block extra_structured_data %}{% endblock extra_structured_data %}
 
             <script type="text/javascript">
 
@@ -132,6 +155,7 @@
                   {% else %}
                       <a class="account-link" href="{% url 'login' %}">Login</a>
                   {% endif %}
+                  <button class="theme-toggle" type="button" data-theme-toggle aria-pressed="false" aria-label="Switch to dark theme"><span aria-hidden="true" data-theme-icon>◐</span><span data-theme-label>Dark mode</span></button>
                   <button id="install-app-button" class="install-app-button" type="button">Install app</button>
                   <a class="cart-link" href="{% url 'cart' %}" aria-label="Shopping cart">
                       <img  id="cart-icon" src="{% static 'images/cart.png' %}">
@@ -159,7 +183,7 @@
                 <br>
          </div>
 
-      <footer class="shop-footer">Avatar Store <span aria-hidden="true">·</span> Created by Subhasiosh Rath, Odisha <span aria-hidden="true">·</span> <a href="{% url 'help' %}">Help &amp; support</a></footer>
+      <footer class="shop-footer">Avatar Store <span aria-hidden="true">·</span> Subhasish Rath and a heart ❤️ from Odisha <span aria-hidden="true">·</span> <a href="{% url 'help' %}">Help &amp; support</a></footer>
 
       <script src="https://code.jquery.com/jquery-3.4.1.slim.min.js" integrity="sha384-J6qa4849blE2+poT4WnyKhv5vZF5SrPo0iEjwBvKU7imGFAV0wwj1yYfoRSJoZ+n" crossorigin="anonymous"></script>
 
@@ -170,6 +194,7 @@
       <script type="text/javascript" src="{% static 'js/cart.js' %}"></script>
       <script type="text/javascript" src="{% static 'js/splash.js' %}"></script>
       <script type="text/javascript" src="{% static 'js/pwa.js' %}"></script>
+      <script type="text/javascript" src="{% static 'js/theme.js' %}?v=7"></script>
       {% block extra_scripts %}{% endblock %}
      </body>
 </html>

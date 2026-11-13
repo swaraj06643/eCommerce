@@ -147,6 +147,39 @@ class StorefrontTests(TestCase):
         self.assertContains(response, 'delivery-check')
         self.assertContains(response, reverse('checkout'))
 
+    def test_product_page_exposes_canonical_and_product_structured_data(self):
+        response = self.client.get(reverse('product_detail', args=[self.product.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'rel="canonical"')
+        self.assertContains(response, 'property="og:type" content="product"')
+        self.assertContains(response, 'application/ld+json')
+        self.assertContains(response, '"@type":"Product"')
+        self.assertContains(response, '"priceCurrency":"INR"')
+        self.assertContains(response, 'https://schema.org/InStock')
+
+    def test_robots_and_sitemap_expose_public_catalog_only(self):
+        robots = self.client.get(reverse('robots_txt'))
+        sitemap = self.client.get(reverse('sitemap'))
+
+        self.assertEqual(robots.status_code, 200)
+        self.assertContains(robots, 'Disallow: /checkout/')
+        self.assertContains(robots, '/sitemap.xml')
+        self.assertEqual(sitemap.status_code, 200)
+        self.assertContains(sitemap, reverse('product_detail', args=[self.product.pk]))
+        self.assertContains(sitemap, 'http://testserver/')
+
+    def test_theme_controls_and_credit_are_present_in_both_portals(self):
+        shop = self.client.get(reverse('store'))
+        seller = self.client.get(reverse('seller_login'))
+
+        self.assertContains(shop, 'data-theme-toggle')
+        self.assertContains(seller, 'data-theme-toggle')
+        self.assertContains(shop, 'theme.js?v=7')
+        self.assertContains(seller, 'theme.js?v=7')
+        self.assertContains(shop, 'Subhasish Rath and a heart ❤️ from Odisha')
+        self.assertContains(seller, 'Subhasish Rath and a heart ❤️ from Odisha')
+
     def test_delivered_customer_can_submit_and_update_verified_product_review(self):
         user = User.objects.create_user(
             username='review-buyer',
@@ -508,8 +541,9 @@ class StorefrontTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response['Service-Worker-Allowed'], '/')
-        self.assertContains(response, 'avatar-store-v5')
+        self.assertContains(response, 'avatar-store-v7')
         self.assertContains(response, 'order-status.js')
+        self.assertContains(response, 'theme.js')
         self.assertContains(response, "request.mode === 'navigate'")
 
     def test_out_of_stock_product_controls_disable_and_reenable_after_restock(self):
@@ -1474,12 +1508,29 @@ class StorefrontTests(TestCase):
             'tracking_number': 'TRACK-123',
             'tracking_url': 'https://carrier.example/track/TRACK-123',
         }
-        for status in ('Packed', 'Dispatched', 'Shipped', 'Out for Delivery', 'Delivered'):
+        response = self.client.post(reverse('seller_dashboard'), {
+            **update,
+            'confirm_delivered': '1',
+        })
+        self.assertEqual(response.status_code, 302)
+        fulfillment.refresh_from_db()
+        self.assertEqual(fulfillment.status, 'Placed')
+
+        for status in ('Packed', 'Dispatched', 'Shipped', 'Out for Delivery'):
             response = self.client.post(reverse('seller_dashboard'), {
                 **update,
                 'status': status,
             })
             self.assertEqual(response.status_code, 302)
+
+        dashboard = self.client.get(reverse('seller_dashboard'))
+        self.assertContains(dashboard, 'Confirm successfully delivered')
+        response = self.client.post(reverse('seller_dashboard'), {
+            **update,
+            'confirm_delivered': '1',
+        })
+        self.assertEqual(response.status_code, 302)
+        self.assertContains(self.client.get(reverse('seller_dashboard')), 'can now leave a verified review')
 
         fulfillment.refresh_from_db()
         order.refresh_from_db()
@@ -1504,6 +1555,24 @@ class StorefrontTests(TestCase):
             'status': 'Delivered',
         })
         self.assertEqual(response.status_code, 404)
+
+        buyer = User.objects.create_user(
+            username='delivered-review-buyer',
+            email='buyer@example.com',
+            password='Password!123',
+        )
+        order.customer.user = buyer
+        order.customer.save(update_fields=['user'])
+        self.client.force_login(buyer)
+        review_page = self.client.get(reverse('product_detail', args=[self.product.pk]))
+        self.assertContains(review_page, 'Review this product')
+        review_response = self.client.post(reverse('product_detail', args=[self.product.pk]), {
+            'rating': '5',
+            'title': 'Delivered successfully',
+            'body': 'The order arrived safely and the delivery update was accurate.',
+        })
+        self.assertEqual(review_response.status_code, 302)
+        self.assertTrue(ProductReview.objects.filter(order=order, product=self.product).exists())
 
     def test_cod_order_invoice_download_returns_pdf_with_signatory(self):
         self.client.cookies['cart'] = json.dumps({str(self.product.pk): {'quantity': 1}})

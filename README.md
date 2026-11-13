@@ -1,5 +1,5 @@
 # Avatar Store
-Avatar is an eCommerce store created by Subhasiosh Rath in Odisha, with a welcoming animated brand intro and a storefront for everyday finds.
+Avatar Store is an online shopping marketplace from Odisha, with product discovery, seller listings, order tracking, and a storefront for everyday finds.
 
 ## Features
 - Customer registration, login, editable profile, and order history.
@@ -23,6 +23,8 @@ Avatar is an eCommerce store created by Subhasiosh Rath in Odisha, with a welcom
 - Seller-defined product coupons (up to three codes per listing), validated and applied to eligible items at checkout with discounts recorded on the order and payment.
 - Checkout price breakdown with seller-configured product GST, configurable platform fee and fee GST, free delivery, and persisted order/payment totals.
 - Installable progressive web app with a web app manifest, home-screen install prompt, cached static assets, and an offline notice.
+- Persistent light/dark theme controls shared by the shopper and seller portals, with responsive layouts and system-theme detection.
+- Search-friendly product pages with canonical/Open Graph metadata, Product JSON-LD, crawlable product sitemaps, and `robots.txt` rules for private routes.
 - Downloadable, digitally generated order invoices with a configurable authorized-signatory name. This is a typed signatory on the PDF, not a certificate-based cryptographic PDF signature.
 - Signed-in users can open seller settings from Account → **Be a seller**, publish or hide listings, update stock, and review orders containing their products. Seller listings require an active product category and appear in the storefront's category navigation.
 - Delivery PIN entry and address collection at checkout. Postal checks validate the PIN, delivery status, city and state against India Post directory data; they do not prove a street address or phone ownership.
@@ -92,6 +94,10 @@ python manage.py runserver
 ```
 
 Keep the database URL, `DJANGO_SECRET_KEY`, and mail credentials out of source control. Rotate any database credential that has been pasted into a chat, ticket, or public log before using it. The application does not automatically copy existing SQLite records into Neon; migrate the schema first, then import data separately if needed.
+
+## SEO and public deployment
+
+Product detail pages publish canonical URLs, share metadata, and Product structured data; `/sitemap.xml` lists active public products and `/robots.txt` excludes account, checkout, seller, and admin routes. Before production, set `SITE_URL` to the real HTTPS origin and configure `ALLOWED_HOSTS`, deploy with HTTPS, and submit `https://your-domain/sitemap.xml` in Google Search Console/Bing Webmaster Tools. Keep seller listings complete with accurate product titles, descriptions, prices, availability, brands, and photos. These are indexing foundations, not a guarantee of a first-place result; ranking depends on domain authority, competition, product content, reviews, performance, and search-engine decisions.
 
 Use the seller dashboard or Django admin to edit product descriptions, offers, categories, variants, stock counts, and cost prices. Set each product's GST rate to the correct applicable slab; it defaults to 0% rather than guessing a tax rate. The platform fee defaults to 2%, with 18% GST on that fee; configure `PLATFORM_FEE_PERCENT` and `PLATFORM_FEE_GST_RATE` in the local environment to change them. Delivery is currently free. PayU requires merchant credentials to be set in the local environment before enabling online checkout:
 

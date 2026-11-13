@@ -29,9 +29,11 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse, reverse_lazy
 from django.db.models.functions import Coalesce
 from django.utils import timezone
+from django.utils.html import strip_tags
+from django.utils.safestring import mark_safe
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET, require_POST
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
@@ -44,7 +46,6 @@ from .models import (
     OrderFulfillment,
     OrderItem,
     Payment,
-    Refund,
     ReturnRequest,
     PhoneOTPRequest,
     Product,
@@ -69,6 +70,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from xml.sax.saxutils import escape
+from xml.etree.ElementTree import Element, SubElement, register_namespace, tostring
 
 
 logger = logging.getLogger(__name__)
@@ -336,6 +338,56 @@ def store(request):
     return render(request, 'store/store.html', context)
 
 
+def _product_schema_json(product, request, average_rating, review_count):
+    image_urls = []
+    if product.imageURL:
+        image_urls.append(request.build_absolute_uri(product.image.url))
+    image_urls.extend(
+        request.build_absolute_uri(photo.image.url)
+        for photo in product.gallery_images.all()
+    )
+    schema = {
+        '@context': 'https://schema.org',
+        '@type': 'Product',
+        'name': product.name,
+        'description': strip_tags(product.description or '')[:5000],
+        'url': request.build_absolute_uri(reverse('product_detail', args=[product.pk])),
+        'image': image_urls,
+    }
+    if product.price is not None:
+        schema['offers'] = {
+            '@type': 'Offer',
+            'priceCurrency': 'INR',
+            'price': f'{product.price:.2f}',
+            'availability': (
+                'https://schema.org/OutOfStock'
+                if product.is_out_of_stock
+                else 'https://schema.org/InStock'
+            ),
+            'url': request.build_absolute_uri(reverse('product_detail', args=[product.pk])),
+        }
+    if product.brand:
+        schema['brand'] = {'@type': 'Brand', 'name': product.brand}
+    if product.category_id:
+        schema['category'] = product.category.name
+    if product.seller_store_id and 'offers' in schema:
+        schema['offers']['seller'] = {
+            '@type': 'Organization',
+            'name': product.seller_store.name,
+        }
+    if review_count:
+        schema['aggregateRating'] = {
+            '@type': 'AggregateRating',
+            'ratingValue': round(float(average_rating), 1),
+            'reviewCount': review_count,
+            'bestRating': 5,
+            'worstRating': 1,
+        }
+    encoded = json.dumps(schema, ensure_ascii=False, separators=(',', ':'))
+    encoded = encoded.replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026')
+    return mark_safe(encoded)
+
+
 @ensure_csrf_cookie
 def product_detail(request, product_id):
     data = cartData(request)
@@ -414,6 +466,12 @@ def product_detail(request, product_id):
         'reviews': reviews,
         'average_rating': review_summary['average_rating'],
         'review_count': review_summary['review_count'],
+        'product_schema_json': _product_schema_json(
+            product,
+            request,
+            review_summary['average_rating'],
+            review_summary['review_count'],
+        ),
         'can_review': can_review,
         'is_seller_owner': is_seller_owner,
         'review_form': review_form,
@@ -458,6 +516,54 @@ def wishlist_toggle(request):
     ):
         next_url = reverse('wishlist')
     return redirect(next_url)
+
+
+@require_GET
+def robots_txt(request):
+    sitemap_url = request.build_absolute_uri(reverse('sitemap'))
+    return HttpResponse(
+        '\n'.join((
+            'User-agent: *',
+            'Allow: /',
+            'Disallow: /account/',
+            'Disallow: /settings/',
+            'Disallow: /cart/',
+            'Disallow: /checkout/',
+            'Disallow: /orders/',
+            'Disallow: /order-complete/',
+            'Disallow: /seller/',
+            'Disallow: /seller-portal/',
+            'Disallow: /login/',
+            'Disallow: /register/',
+            'Disallow: /password-reset/',
+            'Disallow: /verify-email/',
+            'Disallow: /admin/',
+            f'Sitemap: {sitemap_url}',
+            '',
+        )),
+        content_type='text/plain; charset=utf-8',
+    )
+
+
+@require_GET
+def sitemap_xml(request):
+    namespace = 'http://www.sitemaps.org/schemas/sitemap/0.9'
+    register_namespace('', namespace)
+    root = Element(f'{{{namespace}}}urlset')
+    paths = [reverse('store'), reverse('help')]
+    paths.extend(
+        reverse('product_detail', args=[product_id])
+        for product_id in Product.objects.filter(is_active=True).filter(
+            Q(category__active=True) | Q(category__isnull=True)
+        ).values_list('pk', flat=True)
+    )
+    for path in paths:
+        location = SubElement(root, f'{{{namespace}}}url')
+        SubElement(location, f'{{{namespace}}}loc').text = request.build_absolute_uri(path)
+    return HttpResponse(
+        tostring(root, encoding='utf-8', xml_declaration=True),
+        content_type='application/xml; charset=utf-8',
+    )
 
 
 def service_worker(request):
@@ -1898,11 +2004,21 @@ def seller_dashboard(request):
                     messages.error(request, 'This order is not ready for seller fulfillment updates.')
                     return redirect('seller_dashboard')
 
-                requested_status = request.POST.get('status', '')
-                allowed_statuses = (fulfillment.status, FULFILLMENT_NEXT_STATUS.get(fulfillment.status))
-                if requested_status not in allowed_statuses:
-                    messages.error(request, 'Update the shipment one step at a time.')
-                    return redirect('seller_dashboard')
+                confirm_delivery = request.POST.get('confirm_delivered') == '1'
+                if confirm_delivery:
+                    if fulfillment.status != 'Out for Delivery':
+                        messages.error(request, 'Confirm delivery only after the shipment is out for delivery.')
+                        return redirect('seller_dashboard')
+                    requested_status = 'Delivered'
+                else:
+                    requested_status = request.POST.get('status', '')
+                    allowed_statuses = (
+                        fulfillment.status,
+                        FULFILLMENT_NEXT_STATUS.get(fulfillment.status),
+                    )
+                    if requested_status not in allowed_statuses:
+                        messages.error(request, 'Update the shipment one step at a time.')
+                        return redirect('seller_dashboard')
 
                 tracking_url = request.POST.get('tracking_url', '').strip()
                 if tracking_url:
@@ -1923,15 +2039,29 @@ def seller_dashboard(request):
                 ])
                 _sync_order_status(order)
                 if requested_status != previous_fulfillment_status:
+                    if requested_status == 'Delivered' and order.status == 'Delivered':
+                        update_detail = (
+                            f'{seller_store.name} confirmed successful delivery. You can now leave '
+                            'a verified-purchase review on the product page.'
+                        )
+                    else:
+                        update_detail = f'{seller_store.name} updated the shipment for your order.'
+                    if fulfillment.tracking_number:
+                        update_detail += f' Tracking number: {fulfillment.tracking_number}.'
                     queue_order_update(
                         order,
                         f'order:{order.pk}:fulfillment:{fulfillment.pk}:{requested_status}',
                         requested_status,
-                        f'{seller_store.name} updated the shipment for your order.'
-                        + (f' Tracking number: {fulfillment.tracking_number}.' if fulfillment.tracking_number else ''),
+                        update_detail,
                         _order_url(request, order),
                     )
-            messages.success(request, f'Shipment status for order {order.order_number} was updated.')
+            if requested_status == 'Delivered':
+                messages.success(
+                    request,
+                    f'Order {order.order_number} is marked delivered. The buyer can now leave a verified review.',
+                )
+            else:
+                messages.success(request, f'Shipment status for order {order.order_number} was updated.')
             return redirect('seller_dashboard')
         elif action == 'update_stock' and seller_store:
             product_id = request.POST.get('product_id', '').strip()

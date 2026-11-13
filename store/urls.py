@@ -5,6 +5,8 @@ from . import views
 
 urlpatterns = [
         path('service-worker.js', views.service_worker, name='service_worker'),
+        path('robots.txt', views.robots_txt, name='robots_txt'),
+        path('sitemap.xml', views.sitemap_xml, name='sitemap'),
         path('', views.store, name="store"),
         path('products/<int:product_id>/', views.product_detail, name="product_detail"),
         path('help/', views.help_center, name="help"),

@@ -184,7 +184,7 @@
                 <label>Delivery partner<input name="shipping_partner" maxlength="100" value="{{ group.fulfillment.shipping_partner }}" placeholder="Courier / delivery partner" {% if not group.can_update_fulfillment %}disabled{% endif %}></label>
                 <label>Tracking number<input name="tracking_number" maxlength="100" value="{{ group.fulfillment.tracking_number }}" placeholder="Shipment tracking number" {% if not group.can_update_fulfillment %}disabled{% endif %}></label>
                 <label>Tracking URL<input name="tracking_url" type="url" value="{{ group.fulfillment.tracking_url }}" placeholder="https://carrier.example/track" {% if not group.can_update_fulfillment %}disabled{% endif %}></label>
-                {% if group.can_update_fulfillment %}<button type="submit" class="seller-secondary-button">Save shipment update</button>{% else %}<small>Shipment updates are available after payment is confirmed.</small>{% endif %}
+                {% if group.can_update_fulfillment %}<button type="submit" class="seller-secondary-button">Save shipment update</button>{% if group.fulfillment.status == 'Out for Delivery' %}<button type="submit" name="confirm_delivered" value="1" class="seller-delivered-button">✓ Confirm successfully delivered</button>{% endif %}{% else %}<small>Shipment updates are available after payment is confirmed.</small>{% endif %}
             </form>
             {% endif %}
         </article>

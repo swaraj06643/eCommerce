@@ -4,12 +4,24 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <meta name="theme-color" content="#e85f54">
     <title>{% block title %}Seller Portal | Avatar{% endblock title %}</title>
     <link rel="icon" type="image/svg+xml" href="{% static 'images/avatar-mark.svg' %}">
-    <link rel="stylesheet" href="{% static 'css/main.css' %}">
+    <link rel="stylesheet" href="{% static 'css/main.css' %}?v=7">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Glory:wght@500&display=swap" rel="stylesheet">
+    <script>
+        (function () {
+            var theme = 'light';
+            try {
+                theme = localStorage.getItem('avatar-theme') ||
+                    (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+            } catch (error) {}
+            document.documentElement.dataset.theme = theme;
+        }());
+    </script>
 </head>
 <body class="shop-body seller-portal-body">
     <div class="top-strip">AVATAR SELLER PORTAL <span aria-hidden="true">·</span> YOUR BUSINESS, YOUR WORKSPACE</div>
@@ -27,6 +39,7 @@
             <a href="{% url 'seller_login' %}">Seller login</a>
             <a class="seller-portal-join" href="{% url 'seller_register' %}">Start selling</a>
             {% endif %}
+            <button class="theme-toggle" type="button" data-theme-toggle aria-pressed="false" aria-label="Switch to dark theme"><span aria-hidden="true" data-theme-icon>◐</span><span data-theme-label>Dark mode</span></button>
         </nav>
     </header>
     <main class="seller-portal-main">
@@ -39,6 +52,7 @@
         {% endif %}
         {% block content %}{% endblock content %}
     </main>
-    <footer class="seller-portal-footer">Avatar Seller Portal <span aria-hidden="true">·</span> Built for your day-to-day selling</footer>
+    <footer class="seller-portal-footer">Avatar Seller Portal <span aria-hidden="true">·</span> Subhasish Rath and a heart ❤️ from Odisha</footer>
+    <script src="{% static 'js/theme.js' %}?v=7"></script>
 </body>
 </html>

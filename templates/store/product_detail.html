@@ -1,6 +1,14 @@
 {% extends 'store/main.html' %}
 {% load static %}
 {% block title %}{{ product.name }} | Avatar Store{% endblock title %}
+{% block meta_description %}Shop {{ product.name }}{% if product.brand %} by {{ product.brand }}{% endif %} at Avatar Store. {{ product.description|striptags|truncatechars:140 }}{% endblock meta_description %}
+{% block social_title %}{{ product.name }} | Shop at Avatar Store{% endblock social_title %}
+{% block social_description %}{{ product.description|striptags|truncatechars:180 }}{% endblock social_description %}
+{% block twitter_title %}{{ product.name }} | Avatar Store{% endblock twitter_title %}
+{% block twitter_description %}{{ product.description|striptags|truncatechars:180 }}{% endblock twitter_description %}
+{% block og_type %}product{% endblock og_type %}
+{% block social_image %}{% if product.image %}{{ request.scheme }}://{{ request.get_host }}{{ product.image.url }}{% else %}{{ request.scheme }}://{{ request.get_host }}{% static 'images/icon-512.png' %}{% endif %}{% endblock social_image %}
+{% block extra_structured_data %}<script type="application/ld+json">{{ product_schema_json|safe }}</script>{% endblock extra_structured_data %}
 {% block content %}
 <div class="detail-breadcrumb">
     <a href="{% url 'store' %}">Home</a>
